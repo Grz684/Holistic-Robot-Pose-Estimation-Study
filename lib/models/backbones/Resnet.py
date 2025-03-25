@@ -11,6 +11,7 @@ class ResNet(nn.Module):
 		       "resnet50": (Bottleneck, [3, 4, 6, 3], [64, 256, 512, 1024, 2048]),
 		       "resnet101": (Bottleneck, [3, 4, 23, 3], [64, 256, 512, 1024, 2048]),
 		       "resnet152": (Bottleneck, [3, 8, 36, 3], [64, 256, 512, 1024, 2048])}
+        # 基本构建块；每层各自包含的残差块数量；每层输出通道数
         block, layers, channels = resnet_spec[resnet_type]
 
         self.block = block
@@ -69,7 +70,10 @@ class ResNet(nn.Module):
     def init_weights(self, backbone_name):
         # org_resnet = torch.utils.model_zoo.load_url(model_urls[self.name])
         # drop orginal resnet fc layer, add 'None' in case of no fc layer, that will raise error
-
+        # pretrained 参数从 torchvision 0.13 版本开始已经被弃用，将来可能会被完全移除
+        # 建议改用 weights 参数
+        # 现在的行为等同于使用 weights=ResNet50_Weights.IMAGENET1K_V1
+        # 也可以使用 weights=ResNet50_Weights.DEFAULT 来获取最新的权重
         import torchvision.models.resnet as resnet_
         if backbone_name == "resnet34":
             resnet_imagenet = resnet_.resnet34(pretrained=True)
@@ -181,6 +185,9 @@ class BasicBlock(nn.Module):
 
 
 def get_resnet(backbone_name, pretrain=True):
+    # BasicBlock.expansion = 1，所以resnet18/34的输出就是512
+    # Bottleneck.expansion = 4，所以resnet50/101/152的输出是2048
+    # 空间维度的缩减因子为1/32
 
     if backbone_name == "resnet":
         backbone = "resnet50"

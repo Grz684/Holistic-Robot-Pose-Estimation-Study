@@ -163,6 +163,27 @@ class BackgroundAugmentation:
         return im, mask, obs
 
 class CropResizeToAspectAugmentation:
+    """
+    A class for augmenting images by cropping and resizing them to a target aspect ratio and resolution.
+    Attributes:
+        resize (tuple): Target resolution for resizing the image, specified as (height, width).
+        aspect (float): Aspect ratio calculated from the target resolution.
+    Methods:
+        __call__(im, mask, obs, use_3d=True):
+            Applies the augmentation to the input image, mask, and observation dictionary.
+            Args:
+                im (numpy.ndarray): Input image with shape (H, W, 3).
+                mask (numpy.ndarray): Segmentation mask corresponding to the input image.
+                obs (dict): Observation dictionary containing camera parameters and object annotations.
+                use_3d (bool, optional): Whether to use 3D keypoints for projection. Defaults to True.
+            Returns:
+                tuple: A tuple containing the augmented image, mask, and updated observation dictionary.
+            Notes:
+                - The method resizes the input image and mask to the target resolution.
+                - Updates the camera intrinsic matrix and bounding box annotations in the observation dictionary.
+                - Computes 2D keypoints from 3D keypoints if `use_3d` is True.
+                - Handles cases where the input image already matches the target resolution.
+    """
     def __init__(self, resize=(640, 480)):
         self.resize = (min(resize), max(resize))
         self.aspect = max(resize) / min(resize)

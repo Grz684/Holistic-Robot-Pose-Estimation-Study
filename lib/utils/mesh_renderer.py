@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import os
 
 # io utils
 from pytorch3d.io import load_obj
@@ -11,7 +12,7 @@ from pytorch3d.structures import Meshes
 from pytorch3d.renderer import (
     RasterizationSettings, MeshRenderer, MeshRasterizer, BlendParams,
     SoftSilhouetteShader, HardPhongShader, PointLights, TexturesVertex,
-    PerspectiveCameras,Textures
+    PerspectiveCameras, Textures
 )
 
 from os.path import exists
@@ -19,26 +20,38 @@ from roboticstoolbox.robot.ERobot import ERobot
 
 
 class PandaArm():
-    def __init__(self, urdf_file): 
-        
+    def __init__(self, urdf_file, dof=7): 
         self.robot = self.Panda(urdf_file)
+        self.dof = dof
         
     def get_joint_RT(self, joint_angle):
+        # 修改断言，根据指定的dof验证关节角度
+        assert joint_angle.shape[0] == self.dof, f"Expected {self.dof} joint angles, got {joint_angle.shape[0]}"
         
-        assert joint_angle.shape[0] == 7
+        # 根据机器人类型确定链接索引列表
+        if self.dof == 7:  # Panda
+            link_idx_list = [0, 1, 2, 3, 4, 5, 6, 7, 9]
+        elif self.dof == 6:  # Dofbot
+            link_idx_list = [0, 1, 2, 3, 4, 5, 6, 7]  # 调整为实际的Dofbot链接索引
+        elif self.dof == 4:  # OWI
+            link_idx_list = [0, 1, 2, 3, 4]  # 调整为实际的OWI链接索引
+        elif self.dof == 15:  # Baxter
+            # 根据Baxter的链接结构定义
+            link_idx_list = list(range(min(17, len(self.robot.links))))
+        else:
+            # 默认情况下假设链接索引与关节数量匹配
+            link_idx_list = list(range(min(self.dof + 2, len(self.robot.links))))
         
-        link_idx_list = [0,1,2,3,4,5,6,7,9]
-        # link 0,1,2,3,4,5,6,7, and hand
         R_list = []
         t_list = []
         
         for i in range(len(link_idx_list)):
             link_idx = link_idx_list[i]
-            T = self.robot.fkine(joint_angle, end = self.robot.links[link_idx], start = self.robot.links[0])
+            T = self.robot.fkine(joint_angle, end=self.robot.links[link_idx], start=self.robot.links[0])
             R_list.append(T.R)
             t_list.append(T.t)
 
-        return np.array(R_list),np.array(t_list)
+        return np.array(R_list), np.array(t_list)
         
     class Panda(ERobot):
         """
@@ -73,17 +86,56 @@ class RobotMeshRenderer():
         self.preload_verts = []
         self.preload_faces = []
         
+        # 导入trimesh用于加载STL文件
+        import trimesh
 
         # preload the mesh to save loading time
         for m_file in mesh_files:
-            assert exists(m_file)
-            preload_verts_i, preload_faces_idx_i, _ = load_obj(m_file)
-            preload_faces_i = preload_faces_idx_i.verts_idx
-            self.preload_verts.append(preload_verts_i)
-            self.preload_faces.append(preload_faces_i)
+            assert exists(m_file), f"File not found: {m_file}"
+            
+            # 获取文件扩展名
+            file_extension = os.path.splitext(m_file)[1].lower()
+            
+            try:
+                if file_extension == '.obj':
+                    # 使用原有的OBJ加载方法
+                    preload_verts_i, preload_faces_idx_i, _ = load_obj(m_file)
+                    preload_faces_i = preload_faces_idx_i.verts_idx
+                elif file_extension == '.stl':
+                    # 使用trimesh加载STL文件
+                    print(f"Loading STL file: {m_file}")
+                    mesh = trimesh.load(m_file)
+                    # 转换为PyTorch张量
+                    preload_verts_i = torch.tensor(mesh.vertices, dtype=torch.float32)
+                    # STL文件中的面是三角形，直接使用
+                    preload_faces_i = torch.tensor(mesh.faces, dtype=torch.int64)
+                else:
+                    raise ValueError(f"Unsupported file format: {file_extension} for file {m_file}")
+                
+                self.preload_verts.append(preload_verts_i)
+                self.preload_faces.append(preload_faces_i)
+                print(f"Successfully loaded: {m_file}, vertices: {preload_verts_i.shape}, faces: {preload_faces_i.shape}")
+                
+            except Exception as e:
+                print(f"Error loading {m_file}: {e}")
+                # 如果加载失败，创建一个小的占位网格
+                print("Creating placeholder mesh")
+                preload_verts_i = torch.tensor([
+                    [0.0, 0.0, 0.0],
+                    [0.01, 0.0, 0.0],
+                    [0.0, 0.01, 0.0],
+                    [0.0, 0.0, 0.01]
+                ], dtype=torch.float32)
+                preload_faces_i = torch.tensor([
+                    [0, 1, 2],
+                    [0, 2, 3],
+                    [0, 3, 1],
+                    [1, 3, 2]
+                ], dtype=torch.int64)
+                self.preload_verts.append(preload_verts_i)
+                self.preload_faces.append(preload_faces_i)
 
-
-        # set up differentiable renderer with given camera parameters
+        # 设置渲染器参数
         self.cameras = PerspectiveCameras(
                                      focal_length = [focal_length],
                                      principal_point = [principal_point],

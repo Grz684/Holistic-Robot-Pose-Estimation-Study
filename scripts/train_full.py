@@ -33,6 +33,8 @@ def train_full(args):
         "cam_params": np.eye(4,dtype=float),
         "init_pose_from_mean": True
     }
+
+    # 是否共享backbone，论文里也有提到
     if args.use_rootnet_with_reg_int_shared_backbone:
         print("regression and integral shared backbone, with rootnet 2 backbones in total")
         model = get_rootNetwithRegInt_model(init_param_dict, args)
@@ -44,16 +46,21 @@ def train_full(args):
     curr_max_auc = 0.0
     curr_max_auc_4real = { "azure": 0.0, "kinect": 0.0, "realsense": 0.0, "orb": 0.0 }
     start_epoch, last_epoch, end_epoch = 0, -1, args.n_epochs
+    # 重新运行
     if args.resume_run:
         start_epoch, last_epoch, curr_max_auc, curr_max_auc_4real = resume_run(args, model, optimizer, device)
-        
+    
+    # 学习率调度器
     lr_scheduler = get_scheduler(args, optimizer, last_epoch)
  
  
     for epoch in range(start_epoch, end_epoch + 1):
         print('In epoch {},  script: full network training (JointNet/RotationNet/KeypoinNet/DepthNet)'.format(epoch + 1))
+        # 将模块设置为训练模式
         model.train()
+        # 迭代器包装，有进度条
         iterator = tqdm(ds_iter_train, dynamic_ncols=True)
+        # AverageValueMeter被用来跟踪和计算训练过程中多个不同损失值的平均值
         losses = AverageValueMeter()
         losses_pose, losses_rot, losses_trans, losses_uv, losses_depth, losses_error2d, losses_error3d, losses_error2d_int, losses_error3d_int, losses_error3d_align = \
             AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter(),AverageValueMeter()
@@ -63,8 +70,10 @@ def train_full(args):
             loss.backward()
             if args.clip_gradient is not None:
                 clipping_value = args.clip_gradient
+                # 梯度裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clipping_value)
             optimizer.step()
+            # 调用 .detach() 后返回的张量不会再跟踪梯度计算
             losses.add(loss.detach().cpu().numpy())
             losses_pose.add(loss_dict["loss_joint"].detach().cpu().numpy())
             losses_rot.add(loss_dict["loss_rot"].detach().cpu().numpy())
@@ -78,6 +87,7 @@ def train_full(args):
             losses_error3d_align.add(loss_dict["loss_error3d_align"].detach().cpu().numpy())
 
             if (batchid+1) % 100 == 0:    # Every 100 mini-batches/iterations
+                # 统计平均损失
                 writer.add_scalar('Train/loss', losses.mean , epoch * len(ds_iter_train) + batchid + 1)
                 writer.add_scalar('Train/pose_loss', losses_pose.mean , epoch * len(ds_iter_train) + batchid + 1)
                 writer.add_scalar('Train/rot_loss', losses_rot.mean , epoch * len(ds_iter_train) + batchid + 1)
@@ -89,6 +99,7 @@ def train_full(args):
                 writer.add_scalar('Train/error2d_int_loss', losses_error2d_int.mean, epoch * len(ds_iter_train) + batchid + 1)
                 writer.add_scalar('Train/error3d_int_loss', losses_error3d_int.mean, epoch * len(ds_iter_train) + batchid + 1)
                 writer.add_scalar('Train/error3d_align_loss', losses_error3d_align.mean, epoch * len(ds_iter_train) + batchid + 1)
+                # 重置统计值
                 losses.reset()
                 losses_pose.reset()
                 losses_rot.reset()
@@ -105,14 +116,17 @@ def train_full(args):
                 for pgid in range(1,len(optimizer.param_groups)):
                     writer.add_scalar(f'LR/learning_rate_opti_{pgid}', optimizer.param_groups[pgid]['lr'], epoch * len(ds_iter_train) + batchid + 1)
         if args.use_schedule:
+            # 学习率调整
             lr_scheduler.step()
             
         auc_adds = {}
         for dsname, loader in test_loader_dict.items():
+            # 测试集有多种类型，分别计算auc
             auc_add = validate(args=args, epoch=epoch, dsname=dsname, loader=loader, model=model, 
                                robot=robot, writer=writer, device=device, device_id=device_id)
             auc_adds[dsname] = auc_add
 
+        # 多个验证集的结果也要保存，例如curr_max_auc_4real（若没有四个真实数据验证集就是其初始化的零字典）
         save_checkpoint(args=args, auc_adds=auc_adds, 
                         model=model, optimizer=optimizer, 
                         ckpt_folder=ckpt_folder, 

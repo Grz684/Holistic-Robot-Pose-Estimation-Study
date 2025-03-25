@@ -37,3 +37,5 @@ BAXTER_DESCRIPTION_PATH = os.path.abspath("/DATA/disk1/cvda_share/robopose_data/
 
 OWI_DESCRIPTION = os.path.abspath(DEPS_DIR / 'owi-description' / 'owi535_description' / 'owi535.urdf')
 OWI_KEYPOINTS_PATH = os.path.abspath(DEPS_DIR / 'owi-description' / 'keypoints.json')
+
+DOFBOT_DESCRIPTION = os.path.abspath(DEPS_DIR / 'dofbot-test5' / 'urdf' / 'dofbot-simple.urdf')

@@ -57,6 +57,14 @@ def make_masks_from_det(detections, h, w):
         mask_n[y1:y2, x1:x2] = True
     return masks
 
+# 结合了边界检查和可选的随机扰动
+# 首先确保边界框在图像范围内
+# 向四个方向扩展原宽高的30%
+# 如果strict=False，添加随机扰动（-20%到+20%的宽高变化）
+# 如果扩展后的宽度小于150像素，则左右各增加75像素
+# 如果扩展后的高度小于120像素，则上下各增加60像素
+# 最后再次确保边界框在图像范围内
+# 适用场景：数据增强、训练时使用，特别是当strict=False时，可以引入随机性帮助模型泛化
 def get_bbox(bbox,w,h, strict=True):
     assert len(bbox)==4
     wmin, hmin, wmax, hmax = bbox
@@ -103,6 +111,10 @@ def get_bbox(bbox,w,h, strict=True):
     new_bbox = np.array([wmin,hmin,wmax,hmax])
     return new_bbox
 
+# 将边界框向四个方向扩展原宽高的30%
+# 如果扩展后的宽度小于150像素，则左右各增加75像素
+# 如果扩展后的高度小于120像素，则上下各增加60像素
+# 不考虑图像边界限制
 def get_bbox_raw(bbox):
     assert len(bbox)==4
     wmin, hmin, wmax, hmax = bbox
@@ -134,6 +146,8 @@ def resize_image(image, bbox, mask, state, bbox_strict_bounded=None):
     x_offset = int((square_size - (wmax-wmin)) // 2)
     y_offset = int((square_size- (hmax-hmin)) // 2)
     
+    # 使用边界框坐标从原始图像中裁剪出目标区域
+    # 将裁剪的区域放置到正方形图像的中心位置，填充到 square_image 中
     square_image[y_offset:y_offset+(hmax-hmin), x_offset:x_offset+(wmax-wmin)] = image[hmin:hmax, wmin:wmax]
     
     keypoints=state['objects'][0]['keypoints_2d']
@@ -143,6 +157,7 @@ def resize_image(image, bbox, mask, state, bbox_strict_bounded=None):
         k[1]+=y_offset
         k[0]+=x_offset
         k[0]-=wmin
+    # 如果提供了 bbox_strict_bounded，则对其进行类似的坐标调整，使其与正方形图像对齐。
     if bbox_strict_bounded is not None:
         bbox_strict_bounded_new = bbox_strict_bounded[0]-wmin+x_offset, bbox_strict_bounded[1]-hmin+y_offset, \
                                 bbox_strict_bounded[2]-wmin+x_offset, bbox_strict_bounded[3]-hmin+y_offset
@@ -245,6 +260,10 @@ def bbox_transform(bbox, K_original_inv, K, resize_hw):
                         ])
     return new_bbox
 
+# 简单地将边界框向四个方向扩展指定的像素数
+# 参数dwmin, dhmin, dwmax, dhmax分别控制左、上、右、下四个方向的扩展量
+# 如果bounded=True且提供了image_size，确保扩展后的边界框不会超出图像边界
+# 适用场景：需要在原始边界框周围创建一个更大但控制精确的区域
 def get_extended_bbox(bbox, dwmin, dhmin, dwmax, dhmax, bounded=True, image_size=None):
     wmin, hmin, wmax, hmax = bbox
     extended_bbox = np.array([wmin-dwmin, hmin-dhmin, wmax+dwmax, hmax+dhmax])

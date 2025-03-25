@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 
 def train_depthnet(args):
-    
+    # 用于启用或禁用自动求导引擎的异常检测功能
     torch.autograd.set_detect_anomaly(True)
     set_random_seed(808)
     
@@ -32,7 +32,7 @@ def train_depthnet(args):
 
     train_ds_names = args.train_ds_names
     test_ds_name_dr = train_ds_names.replace("train_dr","test_dr")
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         test_ds_name_photo = train_ds_names.replace("train_dr","test_photo")
     if urdf_robot_name == "panda":
         test_ds_name_real = [train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-3cam_azure"),
@@ -51,28 +51,30 @@ def train_depthnet(args):
                               color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False, 
                               flip = False,
                               padding=args.padding, extend_ratio=args.extend_ratio) 
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         ds_test_photo = DreamDataset(test_ds_name_photo, 
                                      # rootnet_resize_hw=(int(args.image_size),int(args.image_size)), 
                                      color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False, 
                                      flip = False,
                                      padding=args.padding, extend_ratio=args.extend_ratio) 
-    
+    # 代码实现了从训练数据集中随机采样指定数量的数据项，以便在每个 epoch 中使用不同的子集进行训练。这种方法有助于提高训练的多样性和模型的泛化能力。
     train_sampler = PartialSampler(ds_train, epoch_size=args.epoch_size)
     if args.resample:
+        # 采样器（Sampler）是 PyTorch 数据加载器（DataLoader）中的一个组件，用于定义从数据集中抽取样本的策略。采样器决定了数据加载器在每个 epoch 中如何遍历数据集
+        # WeightedRandomSampler：根据给定的权重随机抽取样本，权重较大的样本被抽取的概率较高。
         weights_sampler = np.load("unit_test/z_weights.npy")
         train_sampler = WeightedRandomSampler(weights_sampler, num_samples=min(args.epoch_size, len(ds_train))) 
     ds_iter_train = DataLoader(
         ds_train, sampler=train_sampler, batch_size=args.batch_size, num_workers=args.n_dataloader_workers, drop_last=False, pin_memory=True
     )
-    ds_iter_train = MultiEpochDataLoader(ds_iter_train)
+    # ds_iter_train = MultiEpochDataLoader(ds_iter_train)
 
     test_loader_dict = {}
     ds_iter_test_dr = DataLoader(
         ds_test_dr, batch_size=args.batch_size, num_workers=args.n_dataloader_workers
     )
     test_loader_dict["dr"] = ds_iter_test_dr
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         ds_iter_test_photo = DataLoader(
             ds_test_photo, batch_size=args.batch_size, num_workers=args.n_dataloader_workers
         )
@@ -88,11 +90,12 @@ def train_depthnet(args):
             ds_iter_test_real = DataLoader(
                 ds_test_real, batch_size=args.batch_size, num_workers=args.n_dataloader_workers
             )
+            # test_loader_dict字典保存多个真实数据集的DataLoader
             test_loader_dict[ds_short] = ds_iter_test_real
     
     print("len(ds_iter_train): ",len(ds_iter_train))
     print("len(ds_iter_test_dr): ", len(ds_iter_test_dr))
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         print("len(ds_iter_test_photo): ", len(ds_iter_test_photo))
     if urdf_robot_name == "panda":
         for ds_short in ds_shorts:
@@ -276,7 +279,7 @@ def train_depthnet(args):
         def validate(ds):
             if ds == "dr":
                 loader = ds_iter_test_dr
-            elif ds == "photo" and urdf_robot_name != "baxter":
+            elif ds == "photo" and urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":     
                 loader = ds_iter_test_photo
             elif ds in ["azure", "kinect", "realsense", "orb"] and urdf_robot_name == "panda":
                 loader = test_loader_dict[ds]
@@ -309,6 +312,7 @@ def train_depthnet(args):
         losses = AverageValueMeter()
         nowid = 0
 
+        # 迭代器包装，有进度条
         for batchid, sample in enumerate(iterator):
             optimizer.zero_grad()
             loss = farward_loss(args=args,input_batch=sample, device=device, model=model, train=True)
@@ -333,8 +337,9 @@ def train_depthnet(args):
         if args.use_schedule:
             lr_scheduler.step()
             
+        # 每个epoch结束后，验证模型
         mean_depth_error_dr = validate("dr")
-        if urdf_robot_name != "baxter":
+        if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
             mean_depth_error_photo = validate("photo")
         if urdf_robot_name == "panda":
             mean_depth_error_4real = {}

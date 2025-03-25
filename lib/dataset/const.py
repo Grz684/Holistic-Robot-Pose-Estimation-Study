@@ -9,6 +9,7 @@ rgb_augmentations=[
     PillowColor(p=0.3, factor_interval=(0., 4.))
     ]
 
+# 用不到
 KEYPOINT_NAMES={ 
     'panda' : [
         'panda_link0', 'panda_link2', 'panda_link3',
@@ -31,6 +32,7 @@ KEYPOINT_NAMES={
     ]
 }
 
+# 用不到
 KEYPOINT_NAMES_TO_LINK_NAMES = {
     "panda" : dict(zip(KEYPOINT_NAMES['panda'],KEYPOINT_NAMES['panda'])),
     "kuka" : {
@@ -55,6 +57,7 @@ KEYPOINT_NAMES_TO_LINK_NAMES = {
     }
     }
 
+# 用于前向运动学计算，数目与nkps一致
 LINK_NAMES = {
     'panda': ['panda_link0', 'panda_link2', 'panda_link3', 'panda_link4', 
               'panda_link6', 'panda_link7', 'panda_hand'],
@@ -67,9 +70,11 @@ LINK_NAMES = {
     #'owi535': ["Base","Elbow","Wrist","Model","Model","Model","Model","Base","Base","Base","Base","Elbow","Elbow","Elbow","Elbow","Wrist","Wrist"],
     'owi535' :[
         'Rotation', 'Base', 'Elbow', 'Wrist'
-    ]
+    ],
+    'dofbot': ['base_link', 'link1', 'link2', 'link3', 'link4', 'link5', 'left_finger_1', 'right_finger_1']
 }
 
+# 用于前向运动学计算和关机角度张量定序，数目与DOF一致
 JOINT_NAMES={
     'panda': ['panda_joint1', 'panda_joint2', 'panda_joint3', 'panda_joint4', 
             'panda_joint5', 'panda_joint6', 'panda_joint7', 'panda_finger_joint1'],
@@ -80,14 +85,17 @@ JOINT_NAMES={
                'left_w0', 'right_w1', 'left_w1', 'right_w2', 'left_w2'],
     'owi535' :[
         'Rotation', 'Base', 'Elbow', 'Wrist'
-    ]
+    ],
+    'dofbot': ['joint1','joint2','joint3','joint4','joint5', 'left_joint_1']
 }
 
+# 在use_joint_valid_mask为True时生效
 JOINT_TO_KP = {
     'panda': [1, 1, 2, 3, 4, 4, 5, 6],
     'kuka':[1,2,3,4,5,6,7],
     'baxter':[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
-    'owi535':[0,1,2,3]  
+    'owi535':[0,1,2,3],
+    'dofbot':[0,1,2,3,4,5]
 }
 
 # flip_pairs=[
@@ -120,6 +128,7 @@ LIMB_LENGTH = {
     "kuka": list(KUKA_LIMB_LENGTH.values())
 }
 
+# 决定init_pose (init_pose just use in iterator method)，或者在use_joint_valid_mask为True时，用mean覆盖不可见关节的角度
 INITIAL_JOINT_ANGLE = {
     "zero": {
         "panda": {
@@ -163,6 +172,14 @@ INITIAL_JOINT_ANGLE = {
             "Base":0.0,
             "Elbow":0.0,
             "Wrist":0.0
+        },
+        "dofbot": {
+            "joint1": 0.0,
+            "joint2": 0.0,
+            "joint3": 0.0,
+            "joint4": 0.0,
+            "joint5": 0.0,
+            "left_joint_1": 0.0
         }
     }, 
     "mean": {
@@ -207,6 +224,14 @@ INITIAL_JOINT_ANGLE = {
             "Base":-0.523598,
             "Elbow":0.523598,
             "Wrist":0.0
+        },
+        "dofbot": {
+            "joint1": 0.0,
+            "joint2": 0.0,
+            "joint3": 0.0,
+            "joint4": 0.0,
+            "joint5": 0.0,
+            "left_joint_1": 0.0
         }
     }
 }
@@ -249,7 +274,13 @@ JOINT_BOUNDS = {
         [-1.570796,1.047198],
         [-1.047198, 1.570796],
         [-0.785398,0.785398]
-    ]
+    ],
+    "dofbot": [[-1.5707999e+00,  1.5707999e+00],
+            [-1.0995574e+00,  2.0420351e+00],
+            [-2.3736477e+00,  7.6794487e-01],
+            [-3.2288592e+00, -8.7266460e-02],
+            [-1.5707999e+00,  1.5707999e+00],
+            [-6.1086524e-01,  1.0471976e+00]]
 }
 
 
@@ -258,5 +289,5 @@ INTRINSICS_DICT = {
         "kinect": (525.0, 525.0, 319.5, 239.5),
         "realsense": (615.52392578125, 615.2191772460938, 328.2606506347656, 251.7917022705078),
         "orb": (615.52392578125, 615.2191772460938, 328.2606506347656, 251.7917022705078),
-        
+        "orbbec": (545.77313, 545.77313, 320, 240)
     }

@@ -27,6 +27,16 @@ from lib.utils.metrics import (compute_metrics_batch, draw_add_curve,
                            draw_depth_figure, summary_add_pck)
 from lib.utils.vis import vis_joints_3d
 
+# 模型推理所需的最少输入内容包括：
+
+# 图像输入：
+# reg_images：用于回归网络的预处理图像
+# root_images：用于rootnet网络的预处理图像
+# 相机参数：
+# other_K：相机内参矩阵（用于回归网络）
+# k_values：尺度参数，由相机内参和边界框计算得到
+# 边界框信息：
+# 虽然不直接作为模型输入，但用于计算 k_values
 
 def cast(obj, device, dtype=None):
     if isinstance(obj, (dict, OrderedDict)):
@@ -265,7 +275,7 @@ def test_network(args):
                
     alldis = test()      
         
-
+# 配置参数初始化和管理
 def make_cfg(args):
     cfg = argparse.ArgumentParser('').parse_args([])
     

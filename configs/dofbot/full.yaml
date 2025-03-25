@@ -5,11 +5,11 @@ device_id : [0]
 
 # experiment name (also name of the saving directory)
 # model and log directory : {ROOT}/experiment/{exp_name}/
-exp_name : "panda_full2" 
+exp_name : "dofbot_full" 
 
 # Data
-urdf_robot_name : "panda"
-train_ds_names : "dream/synthetic/panda_synth_train_dr"
+urdf_robot_name : "dofbot"
+train_ds_names : "dofbot_synth_train_dr"
 val_ds_names : None
 image_size : 256.0
 
@@ -32,9 +32,9 @@ final_decay : 0.01
 exponent : 0.95
 
 # Training
-batch_size : 64
-epoch_size : 104950
-n_epochs : 700
+batch_size : 16
+epoch_size : 716
+n_epochs : 10
 n_dataloader_workers : 6
 save_epoch_interval : None
 clip_gradient : 5.0
@@ -69,7 +69,7 @@ bbox_3d_shape :
   - 1300
   - 1300
   - 1300
-reference_keypoint_id : 3   # 0:base 
+reference_keypoint_id : 1   # 0:base 
 # 是否要修复截断的图像
 fix_truncation : False
 
@@ -87,12 +87,9 @@ rootnet_depth_loss_weight : 1.0
 depth_loss_func : "l1"
 use_rootnet_xy_branch : False
 xy_loss_func : "mse"
-pretrained_rootnet: "models/pretrained_depthnet/panda_pretrained_depthnet.pk"
-# use_origin_bbox为True用的是K_original和bbox_strict_bounded_original（提取自isaac二维边界框）
-# use_origin_bbox为False用的是K和bbox_strict_bounded（裁减转换自bbox_strict_bounded_original）
+pretrained_rootnet: "models/curr_best_root_depth_model.pk"
 use_origin_bbox : False
-# use_extended_bbox为True用的是bbox_extended，会覆盖掉bbox_strict_bounded
-use_extended_bbox : True
+use_extended_bbox : False
 
 use_rootnet_with_reg_int_shared_backbone : True
 use_rootnet_with_reg_with_int_separate_backbone : False

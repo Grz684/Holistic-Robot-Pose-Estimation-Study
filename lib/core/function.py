@@ -24,6 +24,8 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         model.eval() 
 
     dtype = torch.float
+    # 数据加载和预处理
+    # 用的是256*256size的图像
     root_images = cast(input_batch["root"]["images"],device).float() / 255.
     root_K = cast(input_batch["root"]["K"],device).float()
 
@@ -39,6 +41,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     valid_mask_crop = cast(input_batch["other"]["valid_mask_crop"],device).float()
     gt_keypoints3d = cast(input_batch["other"]["keypoints_3d"],device).float()
 
+    # 边界框选择与批次大小确定
     batch_size = root_images.shape[0]
     robot_type = args.urdf_robot_name
     if args.use_origin_bbox:
@@ -51,6 +54,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     gt_rot = []
     gt_trans = []
     for n in range(batch_size):
+        # 为每个样本构建关节姿态、旋转和平移的真实值
         jointpose = torch.as_tensor([gt_jointpose[k][n] for k in JOINT_NAMES[robot_type]])
         jointpose = cast(jointpose, device,dtype=dtype)
         rot6d = rotmat_to_rot6d(TCO[n,:3,:3])
@@ -64,6 +68,9 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         gt_rot = rotmat_to_quat(TCO[:,:3,:3])
     gt_trans = torch.stack(gt_trans, 0).to(torch.float32)
 
+    # 非合成数据的BPnP优化
+    # BPnP算法在这里寻找相机相对于机器人基座的姿态
+    # 它使用已知的3D点（相对于机器人基座）和它们的2D投影
     if "synth" not in args.train_ds_names:
         world_3d_pts = robot.get_keypoints_only_fk(gt_pose)
         out = BPnP_m3d.apply(gt_keypoints2d_original, world_3d_pts, K_original[0])
@@ -79,6 +86,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         gt_root_rot = gt_rot
     else:
         assert(args.reference_keypoint_id < len(robot.link_names)), args.reference_keypoint_id
+        # 如果不以base为root，需要计算指定关键点的旋转和平移，如果数据本身有提供指定关键点的trans, rot则可以直接使用
         gt_root_trans = gt_keypoints3d[:,args.reference_keypoint_id,:]
         gt_root_rot = robot.get_rotation_at_specific_root(gt_pose, gt_rot, gt_trans, root = args.reference_keypoint_id)
     assert(gt_root_trans.shape == (batch_size, 3)), gt_root_trans
@@ -93,31 +101,40 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     if args.use_extended_bbox:
         fx, fy = root_K[:,0,0], root_K[:,1,1]
     assert(fx.shape == fy.shape and fx.shape == (batch_size,)), (fx.shape,fy.shape)
+    # 计算2d边界框的面积（最大边长的平方）
     area = torch.max(torch.abs(bboxes[:,2]-bboxes[:,0]), torch.abs(bboxes[:,3]-bboxes[:,1])) ** 2
     assert(area.shape == (batch_size,)), area.shape
+    # 使用公式sqrt(fx*fy*ref_area/actual_area)计算每个样本的缩放系数
     k_values = torch.tensor([torch.sqrt(fx[n]*fy[n]*real_bbox[0]*real_bbox[1] / area[n]) for n in range(batch_size)]).to(torch.float32)
 
     model.to(device)
     model.float()
+    # 使用DataParallel在多个GPU上并行运行模型（如果可用）
+    # DataParallel在内部创建原始模型的多个副本，并将这些副本分别发送到device_ids中指定的各个GPU上
     model = torch.nn.DataParallel(model, device_ids=device_id, output_device=device_id[0])
 
+    # # valid_mask是关键点的二值（0和1）掩码（input_batch["valid_mask"]）
     joint_to_kp_indice = JOINT_TO_KP[robot_type]
     assert len(joint_to_kp_indice) == robot.dof, (len(joint_to_kp_indice), robot.dof)
     joint_valid_mask = valid_mask[:, joint_to_kp_indice]
     gt_pose_before_mask = gt_pose.clone()
 
     if args.use_joint_valid_mask:
+        # 对不可见/无效关节，将真实关节角度替换为平均关节角度
         assert joint_valid_mask.shape == gt_pose.shape, (joint_valid_mask.shape, gt_pose.shape)
         gt_pose = gt_pose * joint_valid_mask
         mean_joints_const = torch.tensor([INITIAL_JOINT_ANGLE['mean'][robot_type][k] for k in JOINT_NAMES[robot_type]]).unsqueeze(0).float()
         mean_joints = mean_joints_const.expand(batch_size, -1).cuda() * (1 - joint_valid_mask)
         gt_pose = gt_pose + mean_joints
+
+    # 模型前向传播
     if args.multi_kp:
         pred_pose, pred_rot, pred_trans, pred_root_uv, pred_root_depth, pred_depths, \
             pred_uvd, pred_keypoints3d_int, pred_keypoints3d_fk = model(reg_images, root_images, k_values, K=other_K)
     else:
         pred_pose, pred_rot, pred_trans, pred_root_uv, pred_root_depth, \
             pred_uvd, pred_keypoints3d_int, pred_keypoints3d_fk = model(reg_images, root_images, k_values, K=other_K)
+    # 关键点重投影和已知关节处理
     pred_keypoints2d_reproj_int = point_projection_from_3d_tensor(other_K, pred_keypoints3d_int)
     pred_keypoints2d_reproj_fk = point_projection_from_3d_tensor(other_K, pred_keypoints3d_fk)
 
@@ -179,19 +196,28 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         }
         
     # Losses
+    # 确保权重数量等于机器人自由度(dof)
+    # 将权重应用于预测和真实关节值，使得权重较高的关节在损失计算中占比更大
+    # 这允许模型更注重某些关键关节的精度（如手臂末端）
     if args.joint_individual_weights is not None:
         assert(len(args.joint_individual_weights) == robot.dof)
         joint_individual_weights = cast(torch.FloatTensor(args.joint_individual_weights).reshape(1,-1),device)
         pred_pose = pred_pose * joint_individual_weights
         gt_pose = gt_pose * joint_individual_weights
 
+    # 如果启用known_joint选项，直接用真实关节值替换预测值
+    # 这通常用于消融实验，评估在理想关节角度下其他预测任务的性能
     if args.known_joint:
         pred_pose = gt_pose.clone()
-        
+    
+    # MSE损失：均方误差，对大偏差更敏感
+    # L1损失：绝对误差，对离群点不那么敏感
+    # SmoothL1损失：结合L1和MSE的优点，在值接近零时表现为MSE，远离零时表现为L1
     MSELoss = torch.nn.MSELoss()
     SmoothL1Loss = torch.nn.SmoothL1Loss()
     L1Loss = torch.nn.L1Loss()
 
+    # 关节姿态损失计算
     if args.pose_loss_func == "smoothl1":
         loss_pose = SmoothL1Loss(pred_pose , gt_pose)
     elif args.pose_loss_func == "l1":
@@ -200,7 +226,8 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         loss_pose = MSELoss(pred_pose , gt_pose)
     else:
         raise(NotImplementedError)
-        
+    
+    # 旋转损失计算
     if args.rot_loss_func == "smoothl1":
         loss_rot = SmoothL1Loss(pred_rot , gt_root_rot)
     elif args.rot_loss_func == "l1":
@@ -208,10 +235,13 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     elif args.rot_loss_func == "mse":
         loss_rot = MSELoss(pred_rot , gt_root_rot)
     elif args.rot_loss_func == "mat_mse":
+        # mat_mse选项，它先将6D或4D旋转表示转换为9D旋转矩阵，再计算MSE
+        # 这种方法更直接地捕捉旋转空间中的误差
         loss_rot = MSELoss(rot6d_to_rotmat(pred_rot) , rot6d_to_rotmat(gt_root_rot))
     else:
         raise(NotImplementedError)
 
+    # 深度损失计算
     if args.depth_loss_func == "smoothl1":
         loss_depth = SmoothL1Loss(pred_root_depth , gt_root_depth)
     elif args.depth_loss_func == "l1":
@@ -221,6 +251,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # UV坐标损失计算
     if args.uv_loss_func == "smoothl1":
         loss_uv = SmoothL1Loss(pred_root_uv/args.image_size , gt_root_uv/args.image_size)
     elif args.uv_loss_func == "l1":
@@ -232,10 +263,12 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         # error_root_uv = cast(error_root_uv,device)
         # loss_uv = torch.mean(error_root_uv)
         error_root_uv = cast(error_root_uv,device) * valid_mask_crop[:,args.reference_keypoint_id]
+        # 计算欧几里得距离后应用有效性掩码，只计算可见关键点的损失
         loss_uv = torch.sum(error_root_uv) / torch.sum(valid_mask_crop[:,args.reference_keypoint_id] != 0)
     else:
         raise(NotImplementedError)
 
+    # 平移损失计算
     if args.trans_loss_func == "smoothl1":
         loss_trans = SmoothL1Loss(pred_trans, gt_root_trans)
     elif args.trans_loss_func == "l1":
@@ -247,12 +280,16 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
         error_root_trans = cast(error_root_trans,device)
         loss_trans = torch.mean(error_root_trans)
         if loss_trans > 5e-1:
+            # 当平均误差大于0.5时，应用指数加权系数
+            # 系数为exp(-20.0 * error)，使大误差样本的贡献减小
+            # 这种机制帮助处理异常值，防止它们主导损失计算
             coeff = torch.exp(- 20.0 * error_root_trans).detach()
             error_root_trans = error_root_trans * coeff
             loss_trans = torch.mean(error_root_trans)
     else:
         raise(NotImplementedError)
 
+    # 3D关键点损失计算（基于FK）
     if args.kp3d_loss_func == "l2norm":
         error3d = torch.norm(pred_keypoints3d_fk - gt_keypoints3d, dim = 2)
         error3d = cast(error3d,device)
@@ -260,6 +297,8 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # 2D关键点重投影损失计算（基于FK）
+    # 对坐标进行归一化，确保尺度一致性
     pred_keypoints2d_reproj_fk = pred_keypoints2d_reproj_fk / torch.tensor([args.image_size, args.image_size], dtype=torch.float).reshape(1,1,2).cuda()
     gt_keypoints2d_normalized = gt_keypoints2d.clone() / torch.tensor([args.image_size, args.image_size], dtype=torch.float).reshape(1,1,2).cuda()
     if args.kp2d_loss_func == "l2norm":
@@ -269,9 +308,11 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # 3D关键点回归损失计算
     if args.kp3d_int_loss_func == "l2norm":
         error3d_int = torch.norm(pred_keypoints3d_int - gt_keypoints3d, dim = 2)
         error3d_int = cast(error3d_int,device)
+        # 直接对所有误差取平均，将[batch_size, num_keypoints]形状的张量变成一个标量值
         loss_error3d_int = torch.mean(error3d_int)
         if args.fix_mask:
             error3d_int = cast(error3d_int * valid_mask_crop, device)
@@ -279,6 +320,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # 2D关键点回归重投影损失计算
     pred_keypoints2d_reproj_int = pred_keypoints2d_reproj_int / torch.tensor([args.image_size, args.image_size], dtype=torch.float).reshape(1,1,2).cuda()
     if args.kp2d_int_loss_func == "l2norm":
         error2d_reproj_int = torch.norm(pred_keypoints2d_reproj_int - gt_keypoints2d_normalized, dim = 2)
@@ -287,6 +329,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # 3D对齐损失计算
     if args.align_3d_loss_func == "l2norm":
         align3d_error = torch.norm(pred_keypoints3d_fk - pred_keypoints3d_int, dim = 2)
         align3d_error = cast(align3d_error,device)
@@ -297,6 +340,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         raise(NotImplementedError)
 
+    # 当启用多关键点模式时，计算指定关键点的深度损失
     if args.multi_kp:
         gt_kp_depths = gt_keypoints3d[:,args.kps_need_depth,2]
         assert gt_kp_depths.shape == pred_depths.shape, (gt_kp_depths.shape, pred_depths.shape)
@@ -304,6 +348,7 @@ def farward_loss(args, input_batch, model, robot, device, device_id, train=True)
     else:
         loss_depth_multi = torch.tensor([0])
 
+    # 总损失计算，如果启用多关键点模式，添加多关键点深度损失
     loss = args.pose_loss_weight * loss_pose + args.rot_loss_weight * loss_rot + \
             args.uv_loss_weight * loss_uv + args.depth_loss_weight * loss_depth + args.trans_loss_weight * loss_trans + \
             args.kp2d_loss_weight * loss_error2d + args.kp3d_loss_weight * loss_error3d + \

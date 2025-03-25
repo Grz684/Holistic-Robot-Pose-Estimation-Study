@@ -432,6 +432,8 @@ def train_sim2real(args):
                         image_o = cv2.resize(image_o, (320, 240))
                         cv2.imwrite(train_vispath+f'/origin_epoch{epoch_log}_batch{batchid}.jpg',image_o)
                 rendered_masks = torch.cat(rendered_masks, 0)
+
+                # 掩码匹配损失，可以使用均方误差(MSE)或二元交叉熵(BCE)来衡量两个掩码之间的像素级差异
                 if args.mask_loss_func == "mse_mean":
                     loss_mask = mse_mean(rendered_masks, seg_masks.squeeze())
                 elif args.mask_loss_func == "bce":
@@ -443,6 +445,7 @@ def train_sim2real(args):
                 
                 seg_masks = seg_masks.squeeze()
         
+                # IoU损失，最大化渲染掩码与真实分割掩码之间的交并比(IoU)，不仅关注像素级差异，还关注整体形状和位置的匹配程度
                 intersection = torch.sum(seg_masks * rendered_masks, dim=(1,2))
                 seg_area = torch.sum(seg_masks, dim=(1,2))
                 render_area = torch.sum(rendered_masks, dim=(1,2))
@@ -450,12 +453,14 @@ def train_sim2real(args):
                 iou = intersection / union
                 loss_iou = 1 - torch.mean(iou)
                 
+                # 尺度损失，防止预测的机器人尺度与真实尺度严重不匹配
                 seg_only_area = seg_area - intersection
                 render_only_area = render_area - intersection
                 scale_ratio = seg_only_area / render_only_area
                 ratio_filter = (scale_ratio.detach() > 5.0) | (scale_ratio.detach() < 0.2)
                 loss_scale = torch.sum(torch.abs(torch.log(scale_ratio)) * ratio_filter) / (torch.sum(ratio_filter)+1e-9)
                 
+                # 3d对齐损失：计算通过FK(正向运动学)得到的3D关键点与通过积分方法直接预测的3D关键点之间的欧几里得距离
                 align3d_error = torch.norm(pred_keypoints3d - pred_keypoints3d_int, dim = 2)
                 align3d_error = cast(align3d_error,device)
                 loss_error3d_align = torch.mean(align3d_error)

@@ -416,17 +416,23 @@ def vis_3dkp_single_view(preds, gt, save_path, elev=12, azim=0, error_val=None):
     assert len(preds.shape) == 2 and len(gt.shape) == 2, (preds.shape, gt.shape)
     preds = preds.detach().cpu().numpy()
     gt = gt.detach().cpu().numpy()
-    
+    # 创建一个8×6英寸的图形，并添加一个3D子图
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection='3d')
+    # 设置3D图形背景平面为白色（RGB值为1.0,1.0,1.0，透明度为1.0）
     ax.w_xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
     ax.w_yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
     ax.w_zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
+    # 设置视角参数，控制从哪个角度查看3D图形
     ax.view_init(elev=elev, azim=azim)
+    # 从预定义的字典中获取"panda"机器人的连接关系，这定义了哪些关键点应该连接在一起
     connectivity = CONNECTIVITY_DICT["panda"]
     
+    # 使用preds的第0列作为x坐标，第2列作为y坐标，第1列作为z坐标（注意坐标轴映射不是顺序的）
     ax.scatter(preds[:, 0], preds[:, 2], preds[:, 1], s=25, c=np.array([my_lightblue])/255, edgecolors=np.array([my_lightblue])/255)
     for i, jt in enumerate(connectivity):
+        # preds[jt[0], j]表示第jt[0]个关键点的第j个坐标分量
+        # 在NumPy和PyTorch中，对多维数组使用 array[i, j] 是标准的索引方式，表示同时在两个维度上索引
         xs, ys, zs = [np.array([preds[jt[0], j], preds[jt[1], j]]) for j in range(3)]
         color = COLOR_DICT["panda"][i]
         if color == (0,139,139): # green
@@ -436,6 +442,8 @@ def vis_3dkp_single_view(preds, gt, save_path, elev=12, azim=0, error_val=None):
         else:
             set_zorder = 1
         color = np.array(color) / 255
+        # 每个xs、ys和zs都是一个包含两个元素的NumPy数组，分别代表线段起点和终点在相应轴上的坐标
+        # zorder参数在matplotlib中用于控制图形元素的前后层级关系，zorder值较大的元素会显示在zorder值较小的元素上面
         ax.plot(xs, zs, ys, lw=3.5, ls='-', c=color, zorder=set_zorder, solid_capstyle='round')
     plt.xlim(-0.5,0.5)
     plt.ylim(0.5,2.0)

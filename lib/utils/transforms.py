@@ -41,26 +41,35 @@ def uvd_to_xyz(uvd_jts, image_size, intrinsic_matrix_inverse, root_trans, depth_
     uvd_jts_new = uvd_jts.clone()
     assert torch.sum(torch.isnan(uvd_jts)) == 0, ('uvd_jts', uvd_jts)
 
-    # remap uv coordinate to input (256x256) space
+    # remap uv coordinate to input (256x256) space，映射到输入图像的坐标空间
     uvd_jts_new[:, :, 0] = (uvd_jts[:, :, 0] + 0.5) * image_size
     uvd_jts_new[:, :, 1] = (uvd_jts[:, :, 1] + 0.5) * image_size
-    # remap d to m (depth_factor unit: m)
+    # remap d to m (depth_factor unit: m)，depth_factor=bbox_3d_shape[2] * 1e-3
     uvd_jts_new[:, :, 2] = uvd_jts[:, :, 2] * depth_factor
     assert torch.sum(torch.isnan(uvd_jts_new)) == 0, ('uvd_jts_new', uvd_jts_new)
 
+    # 在实际开发中，通常推荐更一致的设备管理方式，比如：
+    # 在开始时明确指定设备（如 device = torch.device('cuda'))
+    # 使用 .to(device) 而不是硬编码的 .cuda()
     dz = uvd_jts_new[:, :, 2].cuda()
 
     # transform uv coordinate to x/z y/z coordinate
+    # ones_like 会得到形状为[batch_size, num_joints, 1]的张量，其中所有值都是1，这用来构造齐次坐标(u,v,1)
     uv_homo_jts = torch.cat((uvd_jts_new[:, :, :2], torch.ones_like(uvd_jts_new)[:, :, 2:]), dim=2).cuda()
     device = intrinsic_matrix_inverse.device
     uv_homo_jts = uv_homo_jts.to(device)
     # batch-wise matrix multipy : (B,1,3,3) * (B,K,3,1) -> (B,K,3,1)
+    # 我们需要将2D点 [u, v, 1] 转换为3D射线方向 [X/Z, Y/Z, 1]
+    # 如果两个张量都是高维的，则按照批量方式处理最后两个维度的矩阵乘法
+    # 在高维张量乘法中，显式地指定维度形状可以避免歧义和潜在错误
     xyz_jts = torch.matmul(intrinsic_matrix_inverse.unsqueeze(1), uv_homo_jts.unsqueeze(-1))
     xyz_jts = xyz_jts.squeeze(dim=3).cuda()
     
     # recover absolute z : (B,K) + (B,1)
+    # root_trans是另一个backbone预测出来的root depth(只有depth信息)
     abs_z = dz + root_trans[:, 2].unsqueeze(-1).cuda()
     # multipy absolute z : (B,K,3) * (B,K,1)
+    # unsqueeze在指定位置添加一个大小为1的新维度
     xyz_jts = xyz_jts * abs_z.unsqueeze(-1)
 
     if return_relative:
@@ -131,6 +140,7 @@ def xyz_to_uvd_from_gt2d(xyz_jts, gt_uv_2d, image_size, root_trans, depth_factor
     return uvd_jts
 
 def uvz2xyz_singlepoint(uv, z, K):
+    # 先乘矩阵，再乘z或者反过来是等效的
     batch_size = uv.shape[0]
     assert uv.shape == (batch_size, 2) and z.shape == (batch_size,1) and K.shape == (batch_size,3,3), (uv.shape, z.shape, K.shape) 
     inv_k = get_intrinsic_matrix_batch((K[:,0,0],K[:,1,1]), (K[:,0,2],K[:,1,2]), bsz=batch_size, inv=True)

@@ -65,7 +65,7 @@ def get_dataloaders(args):
     urdf_robot_name = args.urdf_robot_name
     train_ds_names = args.train_ds_names
     test_ds_name_dr = train_ds_names.replace("train_dr","test_dr")
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         test_ds_name_photo = train_ds_names.replace("train_dr","test_photo")
     if urdf_robot_name == "panda":
         
@@ -85,7 +85,7 @@ def get_dataloaders(args):
                               rootnet_resize_hw=rootnet_hw, 
                               other_resize_hw=other_hw, 
                               color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False) 
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         ds_test_photo = DreamDataset(test_ds_name_photo, 
                                      rootnet_resize_hw=rootnet_hw, 
                                      other_resize_hw=other_hw, 
@@ -100,7 +100,7 @@ def get_dataloaders(args):
         drop_last=False,
         pin_memory=True
     )
-    ds_iter_train = MultiEpochDataLoader(ds_iter_train)
+    # ds_iter_train = MultiEpochDataLoader(ds_iter_train)
 
     test_loader_dict = {}
     ds_iter_test_dr = DataLoader(
@@ -110,7 +110,7 @@ def get_dataloaders(args):
     )
     test_loader_dict["dr"] = ds_iter_test_dr
     
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         ds_iter_test_photo = DataLoader(
             ds_test_photo, 
             batch_size=args.batch_size,
@@ -135,7 +135,7 @@ def get_dataloaders(args):
     
     print("len(ds_iter_train): ", len(ds_iter_train))
     print("len(ds_iter_test_dr): ", len(ds_iter_test_dr))
-    if urdf_robot_name != "baxter":
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
         print("len(ds_iter_test_photo): ", len(ds_iter_test_photo))
     if urdf_robot_name == "panda":
         for ds_short in ds_shorts:

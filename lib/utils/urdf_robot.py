@@ -7,7 +7,7 @@ import pandas as pd
 import pyrender
 import torch
 from config import (BAXTER_DESCRIPTION_PATH, KUKA_DESCRIPTION_PATH,
-                    OWI_DESCRIPTION, OWI_KEYPOINTS_PATH,
+                    OWI_DESCRIPTION, OWI_KEYPOINTS_PATH, DOFBOT_DESCRIPTION,
                     PANDA_DESCRIPTION_PATH, PANDA_DESCRIPTION_PATH_VISUAL)
 from dataset.const import JOINT_NAMES, LINK_NAMES
 from PIL import Image
@@ -36,25 +36,37 @@ class URDFRobot:
             self.urdf_path = BAXTER_DESCRIPTION_PATH
             self.urdf_path_visual = BAXTER_DESCRIPTION_PATH
             self.dof = 15
+            # 机器人渲染底层使用的roboticstoolbox.robot.ERobot库
             self.robot_for_render = PandaArm(self.urdf_path)
         elif self.robot_type == "owi":
             self.urdf_path = OWI_DESCRIPTION
             self.urdf_path_visual = OWI_DESCRIPTION
             self.dof = 4
             self.robot_for_render = None
+        elif self.robot_type == "dofbot":
+            self.urdf_path = DOFBOT_DESCRIPTION
+            self.urdf_path_visual = DOFBOT_DESCRIPTION
+            self.dof = 6
+            self.robot_for_render = PandaArm(self.urdf_path, dof=6)
+        # 从urdf中加载运动学模型
         self.robot = URDF.load(self.urdf_path)
+        # 可视化模型
         self.robot_visual = URDF.load(self.urdf_path_visual)
+        # 关节组
         self.actuated_joint_names = JOINT_NAMES[self.robot_type]
         self.global_scale = 1.0
         self.device = None
         self.link_names, self.offsets = self.get_link_names_and_offsets()
         
     def get_link_names_and_offsets(self):
-        if self.robot_type == "panda" or self.robot_type == "kuka":
+        if self.robot_type == "panda" or self.robot_type == "kuka" or self.robot_type == "dofbot":
+            # 预定以关节名称
+            # 调用unsqueeze方法在第 0 维和最后一维添加新的维度。这样做的目的是为了匹配后续计算中所需的张量形状。
             kp_offsets = torch.zeros((len(LINK_NAMES[self.robot_type]),3),dtype=torch.float).unsqueeze(0).unsqueeze(-1) * self.global_scale
             kp_offsets = kp_offsets.to(torch.float)
             return LINK_NAMES[self.robot_type], kp_offsets
         elif self.robot_type == "baxter":
+            # 从URDF模型中提取关节名称
             joint_name_to_joint = {joint.name: joint for joint in self.robot.joints}
             offsets = []
             link_names = []
@@ -67,6 +79,7 @@ class URDFRobot:
                 joint = joint_name_to_joint[joint_name]
                 offset = joint.origin[:3, -1]
                 link_name = joint.parent
+                # link_name与offset一一对应
                 link_names.append(link_name)
                 offsets.append(offset)
             kp_offsets = torch.as_tensor(np.stack(offsets)).unsqueeze(0).unsqueeze(-1) * self.global_scale
@@ -98,15 +111,26 @@ class URDFRobot:
         base2cam = torch.cat([rotmat,trans],dim=2).cuda()
         base2cam = torch.cat([base2cam,pad],dim=1).cuda()
         base2cam[:,3,3] = 1.0
+        # 得到base相对cam的T变换矩阵
         base2cam = base2cam.unsqueeze(1)
+        # 获取基座坐标系中所有link的变换矩阵
         TWL_base = self.get_TWL(jointcfgs).cuda()
+        # 从基座坐标系转换到相机坐标系
         TWL = base2cam @ TWL_base
+        # 如果每个链接的原点刚好就放在了需要跟踪的关键点位置，则offsets为0向量
         pts = TWL[:, :, :3, :3] @ self.offsets.cuda() + TWL[:, :, :3, [-1]]
         return pts.squeeze(-1)
     
     def get_TWL(self, cfgs):
+        # 调用URDF模型的link_fk_batch方法进行前向运动学计算
+        # 这会返回一个字典，键为连接名称，值为该连接的变换矩阵
         fk = self.robot.link_fk_batch(cfgs, use_names=True)
+        # 从前向运动学结果中提取指定连接的变换矩阵
+        # 按照self.link_names中定义的顺序堆叠变换矩阵
+        # permute操作重排维度顺序，使得批次维度在前
         TWL = torch.stack([fk[link] for link in self.link_names]).permute(1, 0, 2, 3)
+        # 将变换矩阵中的平移部分（前3行最后1列）乘以全局缩放因子
+        # 这通常用于调整模型尺寸以匹配真实世界的单位
         TWL[..., :3, -1] *= self.global_scale
         return TWL
 
@@ -205,17 +229,27 @@ class URDFRobot:
         
         base_dir = os.path.dirname(self.urdf_path)
         
+        # mesh_files = [
+        #             base_dir + "/meshes/visual/link0/link0.obj",
+        #             base_dir + "/meshes/visual/link1/link1.obj",
+        #             base_dir + "/meshes/visual/link2/link2.obj",
+        #             base_dir + "/meshes/visual/link3/link3.obj",
+        #             base_dir + "/meshes/visual/link4/link4.obj",
+        #             base_dir + "/meshes/visual/link5/link5.obj",
+        #             base_dir + "/meshes/visual/link6/link6.obj",
+        #             base_dir + "/meshes/visual/link7/link7.obj",
+        #             base_dir + "/meshes/visual/hand/hand.obj",
+        #             ]
         mesh_files = [
-                    base_dir + "/meshes/visual/link0/link0.obj",
-                    base_dir + "/meshes/visual/link1/link1.obj",
-                    base_dir + "/meshes/visual/link2/link2.obj",
-                    base_dir + "/meshes/visual/link3/link3.obj",
-                    base_dir + "/meshes/visual/link4/link4.obj",
-                    base_dir + "/meshes/visual/link5/link5.obj",
-                    base_dir + "/meshes/visual/link6/link6.obj",
-                    base_dir + "/meshes/visual/link7/link7.obj",
-                    base_dir + "/meshes/visual/hand/hand.obj",
-                    ]
+                    base_dir + "/../meshes/base_link.STL",
+                    base_dir + "/../meshes/link1.STL",
+                    base_dir + "/../meshes/link2.STL",
+                    base_dir + "/../meshes/link3.STL",
+                    base_dir + "/../meshes/link4.STL",
+                    base_dir + "/../meshes/link5.STL",
+                    base_dir + "/../meshes/left_finger_1.STL",
+                    base_dir + "/../meshes/right_finger_1.STL",
+                ]
         
         focal_length = [-fx,-fy]
         principal_point = [cx, cy]

@@ -14,6 +14,7 @@ import six
 from .utils import (parse_origin, unparse_origin, get_filename, load_meshes,
                     configure_origin)
 
+# 这个库是urdfpy库改进得来的，主要是为了适应pytorch的tensor
 
 class URDFType(object):
     """Abstract base class for all URDF types.
@@ -2373,6 +2374,7 @@ class Joint(URDFType):
             def as_tensor(x):
                 return torch.as_tensor(x).to(device).to(dtype)
 
+        # origin为The pose of child and joint frames relative to the parent link's frame.
         if cfg is None:
             return as_tensor(np.tile(self.origin, (n_cfgs, 1, 1)))
         elif self.joint_type == 'fixed':
@@ -3058,6 +3060,7 @@ class URDF(URDFType):
             return {ell.name: fk[ell] for ell in fk}
         return fk
 
+    # 动态规划计算FK
     def link_fk_batch(self, cfgs=None, link=None, links=None, use_names=False):
         """Computes the poses of the URDF's links via forward kinematics in a batch.
 
@@ -3085,12 +3088,14 @@ class URDF(URDFType):
             position the links relative to the base link's frame, or a single
             nx4x4 matrix if ``link`` is specified.
         """
+        # 这里的cfgs是C，batch size的n个joint的角度
         assert isinstance(cfgs, torch.Tensor)
         device, dtype = cfgs.device, cfgs.dtype
 
         def as_tensor(x):
             return x.to(device).to(dtype)
 
+        # n_cfgs就是batch size
         joint_cfgs, n_cfgs = self._process_cfgs(cfgs)
 
         # Process link set
@@ -3113,27 +3118,40 @@ class URDF(URDFType):
             link_set = self.links
 
         # Compute FK mapping each link to a vector of matrices, one matrix per cfg
+        # 创建FK映射，将每个链接映射到一组变换矩阵（每个配置一个矩阵）
         fk = OrderedDict()
+
+        # 链接处理的顺序 - 从基座开始向外，通过self._reverse_topo实现
+        # 每个链接的变换计算 - 从链接回溯到基座，通过self._paths_to_base[lnk]实现
+        # 图的定向是从子链接指向父链接的，树状结构
         for lnk in self._reverse_topo:
             if lnk not in link_set:
                 continue
+
+            # 初始化每个配置的单位变换矩阵
             poses = torch.as_tensor(np.tile(np.eye(4, dtype=np.float64), (n_cfgs, 1, 1))).to(device).to(dtype)
+            
+            # 获取从当前链接到基座链接的路径
             path = self._paths_to_base[lnk]
             for i in range(len(path) - 1):
                 child = path[i]
                 parent = path[i + 1]
                 joint = self._G.get_edge_data(child, parent)['joint']
 
+                # 获取关节配置值
                 cfg_vals = None
                 if joint.mimic is not None:
+                    # 对于模仿关节，使用被模仿关节的配置乘以系数再加上偏移
                     mimic_joint = self._joint_map[joint.mimic.joint]
                     if mimic_joint in joint_cfgs:
                         cfg_vals = joint_cfgs[mimic_joint]
                         cfg_vals = joint.mimic.multiplier * cfg_vals + joint.mimic.offset
                 elif joint in joint_cfgs:
                     cfg_vals = joint_cfgs[joint]
+                # 应用关节变换
                 poses = torch.matmul(joint.get_child_poses(cfg_vals, n_cfgs, dtype=dtype, device=device), poses)
 
+                # 计算重用：处理顺序从基座向外，意味着先计算靠近基座的链接。然后在计算远离基座的链接时，可以重用已计算好的中间结果。
                 if parent in fk:
                     poses = torch.matmul(fk[parent], poses)
                     break
@@ -3930,6 +3948,7 @@ class URDF(URDFType):
             else:
                 # cfgs = np.asanyarray(cfgs, dtype=np.float64)
                 cfgs = torch.as_tensor(cfgs)
+                # 最终joint_cfg中的每个关节都映射到一个长度为batch_size的tensor，而n_cfgs的值将是batch_size
                 for i, j in enumerate(self.actuated_joints):
                     joint_cfg[j] = cfgs[:,i]
         else:
