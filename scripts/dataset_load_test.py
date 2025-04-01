@@ -21,10 +21,13 @@ from lib.utils.utils import cast, set_random_seed, create_logger, get_scheduler
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchnet.meter import AverageValueMeter
 from tqdm import tqdm
+from lib.utils.geometries import (
+    angle_axis_to_rotation_matrix, compute_geodesic_distance_from_two_matrices,
+    quat_to_rotmat, rot6d_to_rotmat, rotmat_to_quat, rotmat_to_rot6d)
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Training')
-    config_path = 'configs/dofbot/depthnet.yaml'
+    config_path = 'configs/dofbot/load_dataset.yaml'
     parser.set_defaults(config=config_path)
     args = parser.parse_args()
     cfg = make_cfg(args)
@@ -50,11 +53,12 @@ if __name__ == '__main__':
                             train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-orb")]
         
     # make train and test(validation) datasets/dataloaders
-    ds_train = DreamDataset(train_ds_names, 
-                            # rootnet_resize_hw=(int(cfg.image_size),int(cfg.image_size)), 
-                            color_jitter=False, rgb_augmentation=False, occlusion_augmentation=cfg.occlusion, 
-                            flip = cfg.rootnet_flip, occlu_p = cfg.occlu_p,
-                            padding=cfg.padding, extend_ratio=cfg.extend_ratio)
+    ds_train = DreamDataset(
+        train_ds_names,
+        rootnet_resize_hw=(256, 256), 
+        other_resize_hw=(256, 256),
+        color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False
+    )
     # ds_test_dr = DreamDataset(test_ds_name_dr, 
     #                           # rootnet_resize_hw=(int(cfg.image_size),int(cfg.image_size)), 
     #                           color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False, 
@@ -74,7 +78,7 @@ if __name__ == '__main__':
         weights_sampler = np.load("unit_test/z_weights.npy")
         train_sampler = WeightedRandomSampler(weights_sampler, num_samples=min(cfg.epoch_size, len(ds_train))) 
     ds_iter_train = DataLoader(
-        ds_train, sampler=train_sampler, batch_size=cfg.batch_size, num_workers=cfg.n_dataloader_workers, drop_last=False, pin_memory=True
+        ds_train, sampler=train_sampler, batch_size=1, num_workers=cfg.n_dataloader_workers, drop_last=False, pin_memory=True
     )
     # ds_iter_train = MultiEpochDataLoader(ds_iter_train)
 
@@ -121,12 +125,38 @@ if __name__ == '__main__':
     
     # 获取第一张图片
     image_tensor = first_batch["root"]["images"][0]  # Shape应该是 [C, H, W]
+    print(f"image_tensor: {image_tensor}")
     K = first_batch["root"]["K"][0]
     K_original = first_batch["K_original"][0]
     bbox_strict_bounded = first_batch["root"]["bbox_strict_bounded"][0]
     bbox_gt2d_extended = first_batch["root"]["bbox_gt2d_extended"][0]
 
-    print(f"K: {K}, K_original: {K_original}")
+    gt_jointpose = first_batch["jointpose"]
+    gt_keypoints2d = first_batch["other"]["keypoints_2d"][0]
+    gt_keypoints3d = first_batch["other"]["keypoints_3d"][0]
+    TCO = first_batch["TCO"]
+
+    for n in range(1):
+        # 为每个样本构建关节姿态、旋转和平移的真实值
+        jointpose = torch.as_tensor([gt_jointpose[k][n] for k in JOINT_NAMES['dofbot']])
+        rot6d = rotmat_to_rot6d(TCO[n,:3,:3])
+        trans = TCO[n,:3,3]
+        gt_pose = jointpose
+        gt_rot = rot6d
+        gt_trans = trans
+
+    print(f"K: {K}, jointpose: {jointpose}, gt_keypoints2d: {gt_keypoints2d}, gt_keypoints3d: {gt_keypoints3d}")
+    print(f"gt_rot: {gt_rot}, gt_trans: {gt_trans}")
+
+    from lib.utils.transforms import point_projection_from_3d_tensor
+    project_keypoint_2d = point_projection_from_3d_tensor(K.unsqueeze(0), gt_keypoints3d.unsqueeze(0))
+    print(f"project_keypoint_2d: {project_keypoint_2d}")
+
+    fk_keypoints3d = robot.get_keypoints_root(jointpose.unsqueeze(0).float(),
+                                rot6d.unsqueeze(0).float(),
+                                trans.unsqueeze(0).float(),
+                                root=1)
+    print(f"fk_keypoints3d: {fk_keypoints3d}")
 
     # 打印更详细的图像信息以诊断问题
     print(f"原始图像张量形状: {image_tensor.shape}")

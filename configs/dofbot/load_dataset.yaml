@@ -1,7 +1,7 @@
 
 # basic training
 no_cuda : False
-device_id : [0,1,2,3]
+device_id : [0]
 
 # experiment name (also name of the saving directory)
 # model and log directory : {ROOT}/experiment/{exp_name}/
@@ -9,7 +9,7 @@ exp_name : "dofbot_full"
 
 # Data
 urdf_robot_name : "dofbot"
-train_ds_names : "dofbot_synth_train_dr"
+train_ds_names : "try_dofbot_synth_train_dr"
 val_ds_names : None
 image_size : 256.0
 
@@ -32,10 +32,10 @@ final_decay : 0.01
 exponent : 0.95
 
 # Training
-batch_size : 128
-epoch_size : 95000
+batch_size : 1
+epoch_size : 1
 n_epochs : 100
-n_dataloader_workers : 16
+n_dataloader_workers : 1
 save_epoch_interval : None
 clip_gradient : 5.0
 

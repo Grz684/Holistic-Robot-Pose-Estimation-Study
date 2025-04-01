@@ -129,6 +129,8 @@ def make_default_cfg():
     # resume
     cfg.resume_run = False
     cfg.resume_experiment_name = "resume_name"
+
+    cfg.distributed = False
     
     return cfg
     

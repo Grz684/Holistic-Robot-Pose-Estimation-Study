@@ -11,15 +11,28 @@ from lib.dataset.samplers import PartialSampler
 from lib.models.depth_net import get_rootnet
 from lib.utils.urdf_robot import URDFRobot
 from lib.utils.utils import cast, set_random_seed, create_logger, get_scheduler
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler
 from torchnet.meter import AverageValueMeter
 from tqdm import tqdm
+import torch.distributed as dist
 
+def get_local_rank():
+    """获取LOCAL_RANK环境变量"""
+    if 'LOCAL_RANK' in os.environ:
+        return int(os.environ['LOCAL_RANK'])
+    return 0
 
 def train_depthnet(args):
+    # 获取本地排名
+    args.local_rank = get_local_rank()
+    print(f"Using local_rank: {args.local_rank}")
     # 用于启用或禁用自动求导引擎的异常检测功能
     torch.autograd.set_detect_anomaly(True)
     set_random_seed(808)
+
+    # 添加随机种子+rank，确保不同进程使用不同随机种子
+    if args.distributed:
+        set_random_seed(808 + args.local_rank)
     
     save_folder, ckpt_folder, log_folder, writer = create_logger(args)
     
@@ -27,7 +40,15 @@ def train_depthnet(args):
     robot = URDFRobot(urdf_robot_name)
  
     device_id = args.device_id
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    
+    # 初始化分布式环境
+    if args.distributed:
+        # 假设args.local_rank由torch.distributed.launch传入
+        torch.cuda.set_device(args.local_rank)
+        dist.init_process_group(backend='nccl')
+        device = torch.device("cuda", args.local_rank)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     
 
     train_ds_names = args.train_ds_names
@@ -58,12 +79,23 @@ def train_depthnet(args):
                                      flip = False,
                                      padding=args.padding, extend_ratio=args.extend_ratio) 
     # 代码实现了从训练数据集中随机采样指定数量的数据项，以便在每个 epoch 中使用不同的子集进行训练。这种方法有助于提高训练的多样性和模型的泛化能力。
-    train_sampler = PartialSampler(ds_train, epoch_size=args.epoch_size)
-    if args.resample:
-        # 采样器（Sampler）是 PyTorch 数据加载器（DataLoader）中的一个组件，用于定义从数据集中抽取样本的策略。采样器决定了数据加载器在每个 epoch 中如何遍历数据集
-        # WeightedRandomSampler：根据给定的权重随机抽取样本，权重较大的样本被抽取的概率较高。
-        weights_sampler = np.load("unit_test/z_weights.npy")
-        train_sampler = WeightedRandomSampler(weights_sampler, num_samples=min(args.epoch_size, len(ds_train))) 
+    # 使用DistributedSampler
+    if args.distributed:
+        train_sampler = DistributedSampler(ds_train)
+    else:
+        # 原来的采样器逻辑
+        train_sampler = PartialSampler(ds_train, epoch_size=args.epoch_size)
+        if args.resample:
+            # 采样器（Sampler）是 PyTorch 数据加载器（DataLoader）中的一个组件，用于定义从数据集中抽取样本的策略。采样器决定了数据加载器在每个 epoch 中如何遍历数据集
+            # WeightedRandomSampler：根据给定的权重随机抽取样本，权重较大的样本被抽取的概率较高。
+            weights_sampler = np.load("unit_test/z_weights.npy")
+            train_sampler = WeightedRandomSampler(weights_sampler, num_samples=min(args.epoch_size, len(ds_train))) 
+
+    if args.distributed:
+        args.batch_size = args.batch_size // dist.get_world_size()
+    else:
+        args.batch_size = args.batch_size
+
     ds_iter_train = DataLoader(
         ds_train, sampler=train_sampler, batch_size=args.batch_size, num_workers=args.n_dataloader_workers, drop_last=False, pin_memory=True
     )
@@ -100,10 +132,18 @@ def train_depthnet(args):
     if urdf_robot_name == "panda":
         for ds_short in ds_shorts:
             print(f"len(ds_iter_test_{ds_short}): ", len(test_loader_dict[ds_short]))
+
     model = get_rootnet(args.backbone_name, 
                     pred_xy=args.use_rootnet_xy_branch,
                     add_fc=args.add_fc,
                     use_offset=args.use_offset)
+    
+    model.to(device)
+    model.float()
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    else:
+        model = torch.nn.DataParallel(model, device_ids=device_id, output_device=device_id[0])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
@@ -214,11 +254,6 @@ def train_depthnet(args):
             assert(area.shape == (batch_size,)), area.shape
             k_values = torch.tensor([torch.sqrt(torch.abs(fx[n])*torch.abs(fy[n])*real_bbox[0]*real_bbox[1] / area[n]) for n in range(batch_size)]).to(torch.float32)
             assert torch.sum(torch.isnan(k_values)) == 0, torch.sum(torch.isnan(k_values))
-                
-            # Cast model to the GPU
-            model.to(device)
-            model.float()
-            model = torch.nn.DataParallel(model, device_ids=device_id, output_device=device_id[0])
 
             # Forward
             if args.use_rootnet_xy_branch:
@@ -276,7 +311,7 @@ def train_depthnet(args):
                 return loss, error_depth, error_x, error_y
             
 
-        def validate(ds):
+        def validate(ds, distributed=False):
             if ds == "dr":
                 loader = ds_iter_test_dr
             elif ds == "photo" and urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":     
@@ -289,33 +324,81 @@ def train_depthnet(args):
             losses_depth = AverageValueMeter()
             alldis = defaultdict(list)
             with torch.no_grad():
-                for idx, sample in enumerate(tqdm(loader, dynamic_ncols=True)):
+                for idx, sample in enumerate(tqdm(loader, dynamic_ncols=True, disable=distributed and dist.get_rank() != 0)):
                     vloss, error_depth, error_x, error_y = farward_loss(args=args,input_batch=sample, device=device, model=model, train=False)
                     loss_val.add(vloss.detach().cpu().numpy())
                     alldis["deptherror"].extend(list(error_depth))
                     alldis["xerror"].extend(error_x)
                     alldis["yerror"].extend(error_y)
 
-            mean_depth_error = np.mean(alldis["deptherror"])
-            mean_x_error, mean_y_error = np.mean(alldis["xerror"]), np.mean(alldis["yerror"])
-            writer.add_scalar('Val/rootz_loss'+ds, loss_val.mean , epoch)
-            writer.add_scalar('Val/mean_depth_error'+ds, mean_depth_error, epoch)
-            writer.add_scalar('Val/mean_x_error'+ds, mean_x_error, epoch)
-            writer.add_scalar('Val/mean_y_error'+ds, mean_y_error, epoch)
+            # 在分布式环境中汇总结果
+            if distributed:
+                # 将本地结果转换为张量
+                local_count = torch.tensor([len(alldis["deptherror"])], device=device)
+                local_depth_sum = torch.tensor([sum(alldis["deptherror"])], device=device)
+                local_x_sum = torch.tensor([sum(alldis["xerror"])], device=device)
+                local_y_sum = torch.tensor([sum(alldis["yerror"])], device=device)
+                local_loss_sum = torch.tensor([loss_val.sum], device=device)
+                
+                # 全局汇总
+                global_count = torch.zeros_like(local_count)
+                global_depth_sum = torch.zeros_like(local_depth_sum)
+                global_x_sum = torch.zeros_like(local_x_sum)
+                global_y_sum = torch.zeros_like(local_y_sum)
+                global_loss_sum = torch.zeros_like(local_loss_sum)
+                
+                dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
+                dist.all_reduce(local_depth_sum, op=dist.ReduceOp.SUM)
+                dist.all_reduce(local_x_sum, op=dist.ReduceOp.SUM)
+                dist.all_reduce(local_y_sum, op=dist.ReduceOp.SUM)
+                dist.all_reduce(local_loss_sum, op=dist.ReduceOp.SUM)
+                
+                global_count = local_count
+                global_depth_sum = local_depth_sum
+                global_x_sum = local_x_sum
+                global_y_sum = local_y_sum
+                global_loss_sum = local_loss_sum
+                
+                mean_depth_error = (global_depth_sum / global_count).item() if global_count.item() > 0 else 0
+                mean_x_error = (global_x_sum / global_count).item() if global_count.item() > 0 else 0
+                mean_y_error = (global_y_sum / global_count).item() if global_count.item() > 0 else 0
+                mean_loss = (global_loss_sum / global_count).item() if global_count.item() > 0 else 0
+            else:
+                mean_depth_error = np.mean(alldis["deptherror"])
+                mean_x_error, mean_y_error = np.mean(alldis["xerror"]), np.mean(alldis["yerror"])
+                mean_loss = loss_val.mean
+            
+            # 只在主进程或非分布式环境中记录
+            if not distributed or dist.get_rank() == 0:
+                writer.add_scalar('Val/rootz_loss'+ds, mean_loss, epoch)
+                writer.add_scalar('Val/mean_depth_error'+ds, mean_depth_error, epoch)
+                writer.add_scalar('Val/mean_x_error'+ds, mean_x_error, epoch)
+                writer.add_scalar('Val/mean_y_error'+ds, mean_y_error, epoch)
+            
             model.train()
             return mean_depth_error
         
         
         # train one epoch
+        # 为分布式采样器设置epoch
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
+            # 添加同步点，确保所有进程在开始新epoch前完成
+            dist.barrier()
+
         model.train()
-        iterator = tqdm(ds_iter_train, dynamic_ncols=True)
+        # 在分布式环境中，只在主进程显示进度条
+        if not args.distributed or dist.get_rank() == 0:
+            iterator = tqdm(ds_iter_train, dynamic_ncols=True)
+        else:
+            iterator = ds_iter_train
         losses = AverageValueMeter()
         nowid = 0
 
-        # 迭代器包装，有进度条
+        # 迭代器包装
         for batchid, sample in enumerate(iterator):
             optimizer.zero_grad()
-            loss = farward_loss(args=args,input_batch=sample, device=device, model=model, train=True)
+            loss = farward_loss(args=args, input_batch=sample, device=device, model=model, train=True)
             loss.backward()
             if args.clip_gradient is not None:
                 clipping_value = args.clip_gradient
@@ -324,103 +407,133 @@ def train_depthnet(args):
             losses.add(loss.detach().cpu().numpy())
             nowid = batchid
             
-            if (batchid+1) % 100 == 0:    # Every 100 mini-batches/iterations
-                writer.add_scalar('Train/loss', losses.mean , epoch * len(ds_iter_train) + batchid + 1)
-                losses.reset()
-                
-            writer.add_scalar('LR/learning_rate_opti', optimizer.param_groups[0]['lr'],epoch * len(ds_iter_train) + batchid + 1)
+            # 只在主进程记录tensorboard
+            if not args.distributed or dist.get_rank() == 0:
+                if (batchid+1) % 100 == 0:    # Every 100 mini-batches/iterations
+                    writer.add_scalar('Train/loss', losses.mean, epoch * len(ds_iter_train) + batchid + 1)
+                    losses.reset()
+                    
+                writer.add_scalar('LR/learning_rate_opti', optimizer.param_groups[0]['lr'], epoch * len(ds_iter_train) + batchid + 1)
             
-        if (nowid+1) % 100 != 0:
+        if (nowid+1) % 100 != 0 and (not args.distributed or dist.get_rank() == 0):
             writer.add_scalar('Train/loss', losses.mean, epoch * len(ds_iter_train) + nowid)
             losses.reset()
 
         if args.use_schedule:
             lr_scheduler.step()
             
-        # 每个epoch结束后，验证模型
-        mean_depth_error_dr = validate("dr")
-        if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
-            mean_depth_error_photo = validate("photo")
-        if urdf_robot_name == "panda":
-            mean_depth_error_4real = {}
-            mean_depth_error_allreal = 0.0
-            for ds_short in ds_shorts:
-                mean_depth_error_real = validate(ds_short)
-                mean_depth_error_4real[ds_short] = mean_depth_error_real
-                if ds_short in ["orb", "realsense"]:
-                    mean_depth_error_allreal += mean_depth_error_allreal
-                else:
-                    mean_depth_error_allreal += 0.4 * mean_depth_error_allreal
-    
-        save_path_dr = os.path.join(ckpt_folder, 'curr_best_root_depth_model.pk')
-        # save_path_real = os.path.join(ckpt_folder, 'curr_best_root_depth_onreal_model.pk')
-        save_path_azure = os.path.join(ckpt_folder, 'curr_best_root_depth_azure_model.pk')
-        save_path_kinect = os.path.join(ckpt_folder, 'curr_best_root_depth_kinect_model.pk')
-        save_path_realsense = os.path.join(ckpt_folder, 'curr_best_root_depth_realsense_model.pk')
-        save_path_orb = os.path.join(ckpt_folder, 'curr_best_root_depth_orb_model.pk')
-        save_path = {"azure":save_path_azure, "kinect":save_path_kinect, "realsense":save_path_realsense, "orb":save_path_orb}
-        save_path_allreal = os.path.join(ckpt_folder, 'curr_best_root_depth_allreal_model.pk')
-        
-        saves = {"dr":True, "azure":True, "kinect":True, "realsense":True, "orb":True ,"allreal":True}
-        if os.path.exists(save_path_dr): 
-            ckpt = torch.load(save_path_dr)
-            if epoch <= ckpt["epoch"]: # prevent better model got covered during cluster rebooting 
-                saves["dr"] = False
-        for real_name in ["azure", "kinect", "realsense", "orb"]:
-            if os.path.exists(save_path[real_name]): 
-                ckpt_real = torch.load(save_path[real_name])
+        # 每个epoch结束后，验证模型 - 只在主进程执行
+        # 验证部分 - 修改为分布式友好的方式
+        mean_depth_error_dr = None
+        mean_depth_error_photo = None
+        mean_depth_error_4real = {}
+        mean_depth_error_allreal = 0.0
+
+        # 所有进程参与验证，但结果汇总到主进程
+        if args.distributed:
+            # 验证前同步所有进程
+            dist.barrier()
+            mean_depth_error_dr = validate("dr", distributed=True)
+            if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
+                mean_depth_error_photo = validate("photo", distributed=True)
+            if urdf_robot_name == "panda":
+                for ds_short in ds_shorts:
+                    mean_depth_error_real = validate(ds_short, distributed=True)
+                    # 只在主进程处理结果
+                    if dist.get_rank() == 0:
+                        mean_depth_error_4real[ds_short] = mean_depth_error_real
+                        if ds_short in ["orb", "realsense"]:
+                            mean_depth_error_allreal += mean_depth_error_real
+                        else:
+                            mean_depth_error_allreal += 0.4 * mean_depth_error_real
+        else:
+            # 非分布式环境，正常执行验证
+            mean_depth_error_dr = validate("dr")
+            if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
+                mean_depth_error_photo = validate("photo")
+            if urdf_robot_name == "panda":
+                for ds_short in ds_shorts:
+                    mean_depth_error_real = validate(ds_short)
+                    mean_depth_error_4real[ds_short] = mean_depth_error_real
+                    if ds_short in ["orb", "realsense"]:
+                        mean_depth_error_allreal += mean_depth_error_real
+                    else:
+                        mean_depth_error_allreal += 0.4 * mean_depth_error_real
+
+        # 只在主进程执行模型保存
+        if not args.distributed or dist.get_rank() == 0:
+            # 保存路径和检查逻辑保持不变
+            save_path_dr = os.path.join(ckpt_folder, 'curr_best_root_depth_model.pk')
+            save_path_azure = os.path.join(ckpt_folder, 'curr_best_root_depth_azure_model.pk')
+            save_path_kinect = os.path.join(ckpt_folder, 'curr_best_root_depth_kinect_model.pk')
+            save_path_realsense = os.path.join(ckpt_folder, 'curr_best_root_depth_realsense_model.pk')
+            save_path_orb = os.path.join(ckpt_folder, 'curr_best_root_depth_orb_model.pk')
+            save_path = {"azure":save_path_azure, "kinect":save_path_kinect, "realsense":save_path_realsense, "orb":save_path_orb}
+            save_path_allreal = os.path.join(ckpt_folder, 'curr_best_root_depth_allreal_model.pk')
+            
+            saves = {"dr":True, "azure":True, "kinect":True, "realsense":True, "orb":True, "allreal":True}
+            if os.path.exists(save_path_dr): 
+                ckpt = torch.load(save_path_dr)
+                if epoch <= ckpt["epoch"]: # prevent better model got covered during cluster rebooting 
+                    saves["dr"] = False
+            for real_name in ["azure", "kinect", "realsense", "orb"]:
+                if os.path.exists(save_path[real_name]): 
+                    ckpt_real = torch.load(save_path[real_name])
+                    if epoch <= ckpt_real["epoch"]: # prevent better model got covered during cluster rebooting 
+                        saves[real_name] = False
+            if os.path.exists(save_path_allreal): 
+                ckpt_real = torch.load(save_path_allreal)
                 if epoch <= ckpt_real["epoch"]: # prevent better model got covered during cluster rebooting 
-                    saves[real_name] = False
-        if os.path.exists(save_path_allreal): 
-            ckpt_real = torch.load(save_path_allreal)
-            if epoch <= ckpt_real["epoch"]: # prevent better model got covered during cluster rebooting 
-                saves["allreal"] = False
-        
-        if saves["dr"]:
-            if mean_depth_error_dr < curr_min_loss:
-                curr_min_loss = mean_depth_error_dr
-                if args.use_schedule:
-                    last_epoch = lr_scheduler.last_epoch
-                else:
-                    last_epoch = -1
-                torch.save({
-                            'epoch': epoch,
-                            'loss': mean_depth_error_dr,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'lr_scheduler_last_epoch':last_epoch,
-                            }, save_path_dr)
-        
-        if urdf_robot_name == "panda":
-            # for real_name in ["azure", "kinect", "realsense", "orb"]:
-            #     if saves[real_name]:
-            #         if mean_depth_error_4real[real_name] < curr_min_loss_4real[real_name]:
-            #             curr_min_loss_4real[real_name] = mean_depth_error_4real[real_name]
-            #             if args.use_schedule:
-            #                 last_epoch = lr_scheduler.last_epoch
-            #             else:
-            #                 last_epoch = -1
-            #             torch.save({
-            #                         'epoch': epoch,
-            #                         'loss': mean_depth_error_4real[real_name],
-            #                         'model_state_dict': model.state_dict(),
-            #                         'optimizer_state_dict': optimizer.state_dict(),
-            #                         'lr_scheduler_last_epoch':last_epoch,
-            #                         }, save_path[real_name])
-            if saves["allreal"]:
-                if mean_depth_error_allreal < curr_min_loss_allreal:
-                    curr_min_loss_allreal = mean_depth_error_allreal
+                    saves["allreal"] = False
+            
+            # 保存模型 - 只在主进程执行
+            if saves["dr"]:
+                if mean_depth_error_dr < curr_min_loss:
+                    curr_min_loss = mean_depth_error_dr
                     if args.use_schedule:
                         last_epoch = lr_scheduler.last_epoch
                     else:
                         last_epoch = -1
+                    
+                    # 保存未包装的模型
+                    model_state_dict = model.module.state_dict() if args.distributed else model.state_dict()
+                    
                     torch.save({
                                 'epoch': epoch,
-                                'loss': mean_depth_error_allreal,
-                                'model_state_dict': model.state_dict(),
+                                'loss': mean_depth_error_dr,
+                                'model_state_dict': model_state_dict,
                                 'optimizer_state_dict': optimizer.state_dict(),
-                                'lr_scheduler_last_epoch':last_epoch,
-                                }, save_path_allreal)
-                  
-    print("Training Finished !")
-    writer.flush()
+                                'lr_scheduler_last_epoch': last_epoch,
+                                }, save_path_dr)
+            
+            if urdf_robot_name == "panda":
+                if saves["allreal"]:
+                    if mean_depth_error_allreal < curr_min_loss_allreal:
+                        curr_min_loss_allreal = mean_depth_error_allreal
+                        if args.use_schedule:
+                            last_epoch = lr_scheduler.last_epoch
+                        else:
+                            last_epoch = -1
+                        
+                        # 保存未包装的模型
+                        model_state_dict = model.module.state_dict() if args.distributed else model.state_dict()
+                        
+                        torch.save({
+                                    'epoch': epoch,
+                                    'loss': mean_depth_error_allreal,
+                                    'model_state_dict': model_state_dict,
+                                    'optimizer_state_dict': optimizer.state_dict(),
+                                    'lr_scheduler_last_epoch': last_epoch,
+                                    }, save_path_allreal)
+
+            # 打印完成信息 - 只在主进程
+            print("Epoch {} completed!".format(epoch))
+
+        # 确保所有进程同步等待 - 在验证和保存之后
+        if args.distributed:
+            dist.barrier()
+
+    # 训练结束打印信息 - 只在主进程
+    if not args.distributed or dist.get_rank() == 0:
+        print("Training Finished!")
+        writer.flush()

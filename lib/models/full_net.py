@@ -207,6 +207,7 @@ class RootNetwithRegInt(nn.Module):
             init_rot = rotmat_to_quat(torch.from_numpy(np.array(init_param_cam[:3,:3])).unsqueeze(0)).float()
         
         # 缓冲区是模型的一部分，但不会被视为模型的参数，因此不会在训练过程中更新。它们通常用于存储固定的值
+        # 不知道这个有啥用，后面的self.init_pose好像调用的也不是它
         self.register_buffer('init_pose', init_pose)
         self.register_buffer('init_rot', init_rot)
 

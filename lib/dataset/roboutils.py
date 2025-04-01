@@ -4,7 +4,9 @@ import numpy as np
 import torchvision.transforms as transforms
 from PIL import Image
 import sys 
-sys.path.append("..") 
+import os
+# sys.path.append("..") 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.geometries import get_K_crop_resize
 import random
 

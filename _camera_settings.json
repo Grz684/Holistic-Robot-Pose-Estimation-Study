@@ -1,0 +1,27 @@
+{
+	"camera_settings": [
+		{
+			"id": "",
+			"name": "",
+			"intrinsic_settings":
+			{
+				"fx": 545.77313,
+				"fy": 545.77313,
+				"cx": 320,
+				"cy": 240,
+				"s": 0,
+				"hfov": 90,
+				"resolution":
+				{
+					"width": 640,
+					"height": 480
+				}
+			},
+			"captured_image_size":
+			{
+				"width": 640,
+				"height": 480
+			}
+		}
+	]
+}

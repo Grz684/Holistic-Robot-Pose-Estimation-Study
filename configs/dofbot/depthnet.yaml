@@ -1,7 +1,7 @@
 
 # basic training
 no_cuda : False
-device_id : [0]
+device_id : [0,1,2,3]
 
 # experiment name (also name of the saving directory)
 # model and log directory : {ROOT}/experiment/{exp_name}/
@@ -20,7 +20,7 @@ split_type : "2-first"
 use_rpmg: False
 
 # Optimizer
-lr : 1e-4
+lr : 4e-4
 weight_decay : 0.
 use_schedule : False
 schedule_type : "linear"
@@ -33,10 +33,10 @@ clip_gradient : 1.0
 
 # Training
 # 跟数据集对应
-batch_size : 16
-epoch_size : 572
-n_epochs : 10
-n_dataloader_workers : 6
+batch_size : 256
+epoch_size : 95000
+n_epochs : 100
+n_dataloader_workers : 16
 save_epoch_interval : None
 
 # Method
@@ -89,3 +89,5 @@ use_rootnet_with_angle: False
 # Resume
 resume_run : False
 resume_experiment_name : "resume_name"
+
+distributed: True

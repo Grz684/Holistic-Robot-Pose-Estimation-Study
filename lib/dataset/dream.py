@@ -227,13 +227,25 @@ class DreamDataset(torch.utils.data.Dataset):
         # keypoints_2d = np.concatenate([np.array(kp['projected_location'])[None] for kp in keypoints_data], axis=0)
         # # 去重
         # keypoints_2d = np.unique(keypoints_2d, axis=0)
+        from lib.dataset.const import LINK_NAMES
+        link_names = LINK_NAMES['dofbot']
         keypoints_data = annotations["keypoint_dict"]
-        keypoints_2d = np.concatenate([np.array(kp_dict['keypoint_projection'])[None] for kp_name, kp_dict in keypoints_data.items()], axis=0)
-        # keypoints_2d = np.unique(keypoints_2d, axis=0)
+        filtered_keypoints_2d = []
 
-        # 获取keypoints_2d的前nkps个样本
-        nkpt = min(len(keypoints_2d), self.nkpt)  # 例如，获取前10个样本，或根据需要调整
-        keypoints_2d = keypoints_2d[:nkpt]
+        for kp_name, kp_dict in keypoints_data.items():
+            # Extract the link name from format like "/World/dofbot/link2"
+            link_name = kp_name.split('/')[-1]
+            
+            if link_name in link_names:
+                # This keypoint belongs to a link we're interested in
+                filtered_keypoints_2d.append(np.array(kp_dict['keypoint_projection'])[None])
+
+        # Concatenate all the filtered keypoints
+        if filtered_keypoints_2d:
+            keypoints_2d = np.concatenate(filtered_keypoints_2d, axis=0)
+        else:
+            keypoints_2d = np.empty((0, *np.array(next(iter(keypoints_data.values()))['keypoint_projection']).shape))
+        # keypoints_2d = np.unique(keypoints_2d, axis=0)
 
         # bboxes
         # 基于关键点计算的原始边界框
@@ -262,14 +274,38 @@ class DreamDataset(torch.utils.data.Dataset):
         # TCO_keypoints_3d = {kp['name']: np.array(kp['location']) * self.scale for kp in keypoints_data}
         # TCO_keypoints_3d = np.array([TCO_keypoints_3d.get(k, np.nan) for k in self.keypoint_names])
         # assert((np.isnan(TCO_keypoints_3d) == False).all())
-        TCO_keypoints_3d = np.concatenate([np.array(kp_dict['keypoint_positon'])[None] for kp_name, kp_dict in keypoints_data.items()], axis=0)
-        TCO_keypoints_3d = TCO_keypoints_3d[:nkpt]
+        filtered_keypoints_3d = []
+
+        for kp_name, kp_dict in keypoints_data.items():
+            # 从格式如 "/World/dofbot/link2" 中提取链接名称
+            link_name = kp_name.split('/')[-1]
+            
+            if link_name in link_names:
+                # 这个关键点属于我们感兴趣的链接
+                filtered_keypoints_3d.append(np.array(kp_dict['keypoint_positon'])[None])
+
+        # 连接所有过滤后的关键点
+        if filtered_keypoints_3d:
+            TCO_keypoints_3d = np.concatenate(filtered_keypoints_3d, axis=0)
+        else:
+            TCO_keypoints_3d = np.empty((0, *np.array(next(iter(keypoints_data.values()))['keypoint_positon']).shape))
+        
         assert((np.isnan(TCO_keypoints_3d) == False).all())
 
         # keypoints_2d = {kp['name']: kp['projected_location'] for kp in keypoints_data}
         # keypoints_2d = np.array([np.append(keypoints_2d.get(k, np.nan) ,0)for k in self.keypoint_names])
-        keypoints_2d = np.array([np.append(kp_dict['keypoint_projection'],0) for kp_name, kp_dict in keypoints_data.items()])
-        keypoints_2d = keypoints_2d[:nkpt]
+        filtered_keypoints_2d = []
+
+        for kp_name, kp_dict in keypoints_data.items():
+            # 从格式如 "/World/dofbot/link2" 中提取链接名称
+            link_name = kp_name.split('/')[-1]
+            
+            if link_name in link_names:
+                # 这个关键点属于我们感兴趣的链接
+                filtered_keypoints_2d.append(np.append(kp_dict['keypoint_projection'], 0))
+
+        # 转换为 numpy 数组
+        keypoints_2d = np.array(filtered_keypoints_2d) if filtered_keypoints_2d else np.empty((0, 3))
 
         # 创建一个二值掩码（binary mask），基于检测框（bounding box）的位置
         mask = make_masks_from_det(bbox[None], h, w).numpy().astype(np.uint8)[0] * 1     
