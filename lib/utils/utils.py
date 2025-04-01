@@ -62,59 +62,40 @@ def create_logger(args):
 
 
 def get_dataloaders(args):
-    from lib.dataset.dream import DreamDataset
-    from lib.dataset.samplers import PartialSampler
-    from torch.utils.data import DataLoader, DistributedSampler
     
     urdf_robot_name = args.urdf_robot_name
     train_ds_names = args.train_ds_names
-    test_ds_name_dr = train_ds_names.replace("train_dr", "test_dr")
-    
+    test_ds_name_dr = train_ds_names.replace("train_dr","test_dr")
     if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
-        test_ds_name_photo = train_ds_names.replace("train_dr", "test_photo")
-        
+        test_ds_name_photo = train_ds_names.replace("train_dr","test_photo")
     if urdf_robot_name == "panda":
-        test_ds_name_real = [
-            train_ds_names.replace("synthetic/panda_synth_train_dr", "real/panda-3cam_azure"),
-            train_ds_names.replace("synthetic/panda_synth_train_dr", "real/panda-3cam_kinect360"),
-            train_ds_names.replace("synthetic/panda_synth_train_dr", "real/panda-3cam_realsense"),
-            train_ds_names.replace("synthetic/panda_synth_train_dr", "real/panda-orb")
-        ]
         
-    rootnet_hw = (int(args.rootnet_image_size), int(args.rootnet_image_size))
-    other_hw = (int(args.other_image_size), int(args.other_image_size))
-    
-    ds_train = DreamDataset(
-        train_ds_names,
-        rootnet_resize_hw=rootnet_hw, 
-        other_resize_hw=other_hw, 
-        color_jitter=args.jitter, 
-        rgb_augmentation=args.other_aug, 
-        occlusion_augmentation=args.occlusion, 
-        occlu_p=args.occlu_p
-    )
-    
-    ds_test_dr = DreamDataset(
-        test_ds_name_dr,
-        rootnet_resize_hw=rootnet_hw, 
-        other_resize_hw=other_hw, 
-        color_jitter=False, 
-        rgb_augmentation=False, 
-        occlusion_augmentation=False
-    ) 
-    
-    # Create appropriate samplers based on distributed setting
-    if args.distributed:
-        # Adjust batch size for distributed training
-        args.batch_size = args.batch_size // dist.get_world_size()
-        train_sampler = DistributedSampler(ds_train)
-    else:
-        train_sampler = PartialSampler(ds_train, epoch_size=args.epoch_size)
+        test_ds_name_real = [train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-3cam_azure"),
+                            train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-3cam_kinect360"),
+                            train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-3cam_realsense"),
+                            train_ds_names.replace("synthetic/panda_synth_train_dr","real/panda-orb")]
+        
+    rootnet_hw = (int(args.rootnet_image_size),int(args.rootnet_image_size))
+    other_hw = (int(args.other_image_size),int(args.other_image_size))
+    ds_train = DreamDataset(train_ds_names,
+                            rootnet_resize_hw=rootnet_hw, 
+                            other_resize_hw=other_hw, 
+                            color_jitter=args.jitter, rgb_augmentation=args.other_aug, 
+                            occlusion_augmentation=args.occlusion, occlu_p=args.occlu_p)
+    ds_test_dr = DreamDataset(test_ds_name_dr,
+                              rootnet_resize_hw=rootnet_hw, 
+                              other_resize_hw=other_hw, 
+                              color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False) 
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
+        ds_test_photo = DreamDataset(test_ds_name_photo, 
+                                     rootnet_resize_hw=rootnet_hw, 
+                                     other_resize_hw=other_hw, 
+                                     color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False) 
     
     ds_iter_train = DataLoader(
         ds_train, 
-        sampler=train_sampler, 
-        batch_size=args.batch_size, 
+        batch_size=args.batch_size,
+        shuffle=True,  # Accelerate会自动处理为DistributedSampler
         num_workers=args.n_dataloader_workers, 
         drop_last=False,
         pin_memory=True
@@ -129,14 +110,6 @@ def get_dataloaders(args):
     test_loader_dict["dr"] = ds_iter_test_dr
     
     if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
-        ds_test_photo = DreamDataset(
-            test_ds_name_photo, 
-            rootnet_resize_hw=rootnet_hw, 
-            other_resize_hw=other_hw, 
-            color_jitter=False, 
-            rgb_augmentation=False, 
-            occlusion_augmentation=False
-        )
         ds_iter_test_photo = DataLoader(
             ds_test_photo, 
             batch_size=args.batch_size,
@@ -147,15 +120,11 @@ def get_dataloaders(args):
     if urdf_robot_name == "panda":
         ds_shorts = ["azure", "kinect", "realsense", "orb"]
         for ds_name, ds_short in zip(test_ds_name_real, ds_shorts):
-            ds_test_real = DreamDataset(
-                ds_name, 
-                rootnet_resize_hw=rootnet_hw, 
-                other_resize_hw=other_hw, 
-                color_jitter=False, 
-                rgb_augmentation=False, 
-                occlusion_augmentation=False, 
-                process_truncation=args.fix_truncation
-            ) 
+            ds_test_real = DreamDataset(ds_name, 
+                                        rootnet_resize_hw=rootnet_hw, 
+                                        other_resize_hw=other_hw, 
+                                        color_jitter=False, rgb_augmentation=False, occlusion_augmentation=False, 
+                                        process_truncation=args.fix_truncation) 
             ds_iter_test_real = DataLoader(
                 ds_test_real, 
                 batch_size=args.batch_size, 
@@ -163,15 +132,13 @@ def get_dataloaders(args):
             )
             test_loader_dict[ds_short] = ds_iter_test_real
     
-    # Only print details on main process
-    if not args.distributed or dist.get_rank() == 0:
-        print("len(ds_iter_train): ", len(ds_iter_train))
-        print("len(ds_iter_test_dr): ", len(ds_iter_test_dr))
-        if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
-            print("len(ds_iter_test_photo): ", len(ds_iter_test_photo))
-        if urdf_robot_name == "panda":
-            for ds_short in ds_shorts:
-                print(f"len(ds_iter_test_{ds_short}): ", len(test_loader_dict[ds_short]))
+    print("len(ds_iter_train): ", len(ds_iter_train))
+    print("len(ds_iter_test_dr): ", len(ds_iter_test_dr))
+    if urdf_robot_name != "baxter" and urdf_robot_name != "dofbot":
+        print("len(ds_iter_test_photo): ", len(ds_iter_test_photo))
+    if urdf_robot_name == "panda":
+        for ds_short in ds_shorts:
+            print(f"len(ds_iter_test_{ds_short}): ", len(test_loader_dict[ds_short]))
     
     return ds_iter_train, test_loader_dict
 

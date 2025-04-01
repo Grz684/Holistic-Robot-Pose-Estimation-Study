@@ -32,7 +32,7 @@ final_decay : 0.01
 exponent : 0.95
 
 # Training
-batch_size : 128
+batch_size : 32
 epoch_size : 95000
 n_epochs : 100
 n_dataloader_workers : 16

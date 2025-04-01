@@ -378,17 +378,14 @@ def validate(args, epoch, dsname, loader, model, robot, writer, device, device_i
     assert (dsname != "photo" or args.urdf_robot_name != "baxter") # ds == photo -> not baxter
     assert (dsname in ["dr", "photo"] or args.urdf_robot_name == "panda") # ds != dr/photo -> panda
     
-    # 判断是否使用分布式训练
-    distributed = args.distributed
-    
     # loader = test_loader_dict[ds]
     ds = "_"+dsname
     model.eval()
     loss_val = AverageValueMeter()
     losses_pose, losses_rot, losses_trans, losses_uv, losses_depth, losses_error2d, losses_error3d, losses_error2d_int, losses_error3d_int, losses_error3d_align, rotation_diff = \
         AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter(), AverageValueMeter()
-    
-    # 存储各项统计数据
+    alldis = defaultdict(list)
+    alldis_int = defaultdict(list)
     add_thresholds = [1,5,10,20,40,60,80,100]
     pck_thresholds = [2.5,5.0,7.5,10.0,12.5,15.0,17.5,20.0]
     metric_dis3d = [AverageValueMeter() for i in range(len(robot.link_names))]
@@ -396,24 +393,8 @@ def validate(args, epoch, dsname, loader, model, robot, writer, device, device_i
     metric_dis3d_int = [AverageValueMeter() for i in range(len(robot.link_names))]
     metric_dis2d_int = [AverageValueMeter() for i in range(len(robot.link_names))]
     metric_l1joint = [AverageValueMeter() for i in range(robot.dof)]
-    
-    # 用于计算ADD/PCK指标的累积器
-    # 对于每个阈值，我们只需要知道有多少样本低于阈值，而不需要所有原始数据
-    add_counters = {t: 0 for t in add_thresholds}
-    pck_counters = {t: 0 for t in pck_thresholds}
-    add_int_counters = {t: 0 for t in add_thresholds}
-    pck_int_counters = {t: 0 for t in pck_thresholds}
-    sample_count = 0
-    
-    # 收集用于计算PCK/ADD的统计量
-    total_dis3d = 0.0
-    total_dis2d = 0.0
-    total_jointerror = 0.0
-    total_dis3d_int = 0.0
-    total_dis2d_int = 0.0
-    
     with torch.no_grad():
-        for idx, sample in enumerate(tqdm(loader, dynamic_ncols=True, disable=distributed and dist.get_rank() != 0)):
+        for idx, sample in enumerate(tqdm(loader, dynamic_ncols=True)):
             vloss, loss_dict, metric_dict = farward_loss(args=args, input_batch=sample, model=model, robot=robot, device=device, device_id=device_id, train=False)
             loss_val.add(vloss.detach().cpu().numpy())
             losses_pose.add(loss_dict["loss_joint"].detach().cpu().numpy())
@@ -426,291 +407,58 @@ def validate(args, epoch, dsname, loader, model, robot, writer, device, device_i
             losses_error2d_int.add(loss_dict["loss_error2d_int"].detach().cpu().numpy())
             losses_error3d_int.add(loss_dict["loss_error3d_int"].detach().cpu().numpy())
             losses_error3d_align.add(loss_dict["loss_error3d_align"].detach().cpu().numpy())
+            alldis["dis3d"].extend(metric_dict["image_dis3d_avg"])
+            alldis["dis2d"].extend(metric_dict["image_dis2d_avg"])
+            alldis["jointerror"].extend(metric_dict["image_l1jointerror_avg"])
+            alldis_int["dis3d"].extend(metric_dict["image_dis3d_avg_int"])
+            alldis_int["dis2d"].extend(metric_dict["image_dis2d_avg_int"])
             rotation_diff.add(metric_dict["rotation_diff"].detach().cpu().numpy())
-            
-            # 计算当前批次的样本在不同阈值下的统计数据
-            batch_dis3d = metric_dict["image_dis3d_avg"]
-            batch_dis2d = metric_dict["image_dis2d_avg"]
-            batch_dis3d_int = metric_dict["image_dis3d_avg_int"]
-            batch_dis2d_int = metric_dict["image_dis2d_avg_int"]
-            
-            # 累加距离总和（用于计算平均距离）
-            total_dis3d += sum(batch_dis3d)
-            total_dis2d += sum(batch_dis2d)
-            total_jointerror += sum(metric_dict["image_l1jointerror_avg"])
-            total_dis3d_int += sum(batch_dis3d_int)
-            total_dis2d_int += sum(batch_dis2d_int)
-            
-            # 统计当前批次中样本数量
-            curr_samples = len(batch_dis3d)
-            sample_count += curr_samples
-            
-            # 为每个阈值计算符合条件的样本数
-            for t in add_thresholds:
-                add_counters[t] += sum(1 for d in batch_dis3d if d < t)
-                add_int_counters[t] += sum(1 for d in batch_dis3d_int if d < t)
-            
-            for t in pck_thresholds:
-                pck_counters[t] += sum(1 for d in batch_dis2d if d < t)
-                pck_int_counters[t] += sum(1 for d in batch_dis2d_int if d < t)
-            
-            # 关键点和关节统计
             for id in range(len(robot.link_names)):
                 metric_dis3d[id].add(metric_dict["batch_dis3d_avg"][id])
                 metric_dis2d[id].add(metric_dict["batch_dis2d_avg"][id])
+            for id in range(len(robot.link_names)):
                 metric_dis3d_int[id].add(metric_dict["batch_dis3d_avg_int"][id])
                 metric_dis2d_int[id].add(metric_dict["batch_dis2d_avg_int"][id])
-            
             for id in range(robot.dof):
                 metric_l1joint[id].add(metric_dict["batch_l1jointerror_avg"][id])
-    
-    # 在分布式环境中汇总结果
-    if distributed:
-        # 创建统计量张量
-        metrics = [
-            # 基础计数
-            sample_count,
-            # 损失值和样本数
-            loss_val.sum, loss_val.n,
-            losses_pose.sum, losses_pose.n,
-            losses_rot.sum, losses_rot.n,
-            losses_trans.sum, losses_trans.n,
-            losses_depth.sum, losses_depth.n,
-            losses_uv.sum, losses_uv.n,
-            losses_error2d.sum, losses_error2d.n,
-            losses_error3d.sum, losses_error3d.n,
-            losses_error2d_int.sum, losses_error2d_int.n,
-            losses_error3d_int.sum, losses_error3d_int.n,
-            losses_error3d_align.sum, losses_error3d_align.n,
-            rotation_diff.sum, rotation_diff.n,
-            # 距离总和
-            total_dis3d, total_dis2d, total_jointerror,
-            total_dis3d_int, total_dis2d_int
-        ]
-        
-        # 添加阈值计数器
-        for t in add_thresholds:
-            metrics.append(add_counters[t])
-        for t in pck_thresholds:
-            metrics.append(pck_counters[t])
-        for t in add_thresholds:
-            metrics.append(add_int_counters[t])
-        for t in pck_thresholds:
-            metrics.append(pck_int_counters[t])
-            
-        # 添加关键点和关节统计
-        for id in range(len(robot.link_names)):
-            metrics.append(metric_dis3d[id].sum)
-            metrics.append(metric_dis3d[id].n)
-        for id in range(len(robot.link_names)):
-            metrics.append(metric_dis2d[id].sum)
-            metrics.append(metric_dis2d[id].n)
-        for id in range(len(robot.link_names)):
-            metrics.append(metric_dis3d_int[id].sum)
-            metrics.append(metric_dis3d_int[id].n)
-        for id in range(len(robot.link_names)):
-            metrics.append(metric_dis2d_int[id].sum)
-            metrics.append(metric_dis2d_int[id].n)
-        for id in range(robot.dof):
-            metrics.append(metric_l1joint[id].sum)
-            metrics.append(metric_l1joint[id].n)
-            
-        # 转换为张量，进行all_reduce操作
-        metrics_tensor = torch.tensor(metrics, dtype=torch.float64, device=device)
-        dist.all_reduce(metrics_tensor, op=dist.ReduceOp.SUM)
-        
-        # 从张量中提取汇总后的统计量
-        idx = 0
-        sample_count = int(metrics_tensor[idx].item()); idx += 1
-        
-        # 更新损失均值
-        loss_val.sum = metrics_tensor[idx].item(); idx += 1
-        loss_val.n = int(metrics_tensor[idx].item()); idx += 1
-        loss_val.mean = loss_val.sum / loss_val.n if loss_val.n > 0 else 0
-        
-        losses_pose.sum = metrics_tensor[idx].item(); idx += 1
-        losses_pose.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_pose.mean = losses_pose.sum / losses_pose.n if losses_pose.n > 0 else 0
-        
-        losses_rot.sum = metrics_tensor[idx].item(); idx += 1
-        losses_rot.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_rot.mean = losses_rot.sum / losses_rot.n if losses_rot.n > 0 else 0
-        
-        losses_trans.sum = metrics_tensor[idx].item(); idx += 1
-        losses_trans.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_trans.mean = losses_trans.sum / losses_trans.n if losses_trans.n > 0 else 0
-        
-        losses_depth.sum = metrics_tensor[idx].item(); idx += 1
-        losses_depth.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_depth.mean = losses_depth.sum / losses_depth.n if losses_depth.n > 0 else 0
-        
-        losses_uv.sum = metrics_tensor[idx].item(); idx += 1
-        losses_uv.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_uv.mean = losses_uv.sum / losses_uv.n if losses_uv.n > 0 else 0
-        
-        losses_error2d.sum = metrics_tensor[idx].item(); idx += 1
-        losses_error2d.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_error2d.mean = losses_error2d.sum / losses_error2d.n if losses_error2d.n > 0 else 0
-        
-        losses_error3d.sum = metrics_tensor[idx].item(); idx += 1
-        losses_error3d.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_error3d.mean = losses_error3d.sum / losses_error3d.n if losses_error3d.n > 0 else 0
-        
-        losses_error2d_int.sum = metrics_tensor[idx].item(); idx += 1
-        losses_error2d_int.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_error2d_int.mean = losses_error2d_int.sum / losses_error2d_int.n if losses_error2d_int.n > 0 else 0
-        
-        losses_error3d_int.sum = metrics_tensor[idx].item(); idx += 1
-        losses_error3d_int.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_error3d_int.mean = losses_error3d_int.sum / losses_error3d_int.n if losses_error3d_int.n > 0 else 0
-        
-        losses_error3d_align.sum = metrics_tensor[idx].item(); idx += 1
-        losses_error3d_align.n = int(metrics_tensor[idx].item()); idx += 1
-        losses_error3d_align.mean = losses_error3d_align.sum / losses_error3d_align.n if losses_error3d_align.n > 0 else 0
-        
-        rotation_diff.sum = metrics_tensor[idx].item(); idx += 1
-        rotation_diff.n = int(metrics_tensor[idx].item()); idx += 1
-        rotation_diff.mean = rotation_diff.sum / rotation_diff.n if rotation_diff.n > 0 else 0
-        
-        # 距离统计
-        total_dis3d = metrics_tensor[idx].item(); idx += 1
-        total_dis2d = metrics_tensor[idx].item(); idx += 1
-        total_jointerror = metrics_tensor[idx].item(); idx += 1
-        total_dis3d_int = metrics_tensor[idx].item(); idx += 1
-        total_dis2d_int = metrics_tensor[idx].item(); idx += 1
-        
-        # 更新阈值计数器
-        for t in add_thresholds:
-            add_counters[t] = int(metrics_tensor[idx].item()); idx += 1
-        for t in pck_thresholds:
-            pck_counters[t] = int(metrics_tensor[idx].item()); idx += 1
-        for t in add_thresholds:
-            add_int_counters[t] = int(metrics_tensor[idx].item()); idx += 1
-        for t in pck_thresholds:
-            pck_int_counters[t] = int(metrics_tensor[idx].item()); idx += 1
-        
-        # 更新关键点和关节统计
-        for id in range(len(robot.link_names)):
-            metric_dis3d[id].sum = metrics_tensor[idx].item(); idx += 1
-            metric_dis3d[id].n = int(metrics_tensor[idx].item()); idx += 1
-            metric_dis3d[id].mean = metric_dis3d[id].sum / metric_dis3d[id].n if metric_dis3d[id].n > 0 else 0
-            
-        for id in range(len(robot.link_names)):
-            metric_dis2d[id].sum = metrics_tensor[idx].item(); idx += 1
-            metric_dis2d[id].n = int(metrics_tensor[idx].item()); idx += 1
-            metric_dis2d[id].mean = metric_dis2d[id].sum / metric_dis2d[id].n if metric_dis2d[id].n > 0 else 0
-            
-        for id in range(len(robot.link_names)):
-            metric_dis3d_int[id].sum = metrics_tensor[idx].item(); idx += 1
-            metric_dis3d_int[id].n = int(metrics_tensor[idx].item()); idx += 1
-            metric_dis3d_int[id].mean = metric_dis3d_int[id].sum / metric_dis3d_int[id].n if metric_dis3d_int[id].n > 0 else 0
-            
-        for id in range(len(robot.link_names)):
-            metric_dis2d_int[id].sum = metrics_tensor[idx].item(); idx += 1
-            metric_dis2d_int[id].n = int(metrics_tensor[idx].item()); idx += 1
-            metric_dis2d_int[id].mean = metric_dis2d_int[id].sum / metric_dis2d_int[id].n if metric_dis2d_int[id].n > 0 else 0
-            
-        for id in range(robot.dof):
-            metric_l1joint[id].sum = metrics_tensor[idx].item(); idx += 1
-            metric_l1joint[id].n = int(metrics_tensor[idx].item()); idx += 1
-            metric_l1joint[id].mean = metric_l1joint[id].sum / metric_l1joint[id].n if metric_l1joint[id].n > 0 else 0
-    
-    # 计算summary和评估指标
-    if not distributed or dist.get_rank() == 0:
-        # 计算平均值
-        mean_dis3d = total_dis3d / sample_count if sample_count > 0 else 0
-        mean_dis2d = total_dis2d / sample_count if sample_count > 0 else 0
-        mean_jointerror = total_jointerror / sample_count if sample_count > 0 else 0
-        mean_dis3d_int = total_dis3d_int / sample_count if sample_count > 0 else 0
-        mean_dis2d_int = total_dis2d_int / sample_count if sample_count > 0 else 0
-        
-        # 计算 PCK 和 ADD 指标
-        summary = {}
-        summary_int = {}
-        
-        # 计算 PCK 和 ADD 的 AUC
-        add_auc = 0
-        pck_auc = 0
-        add_int_auc = 0
-        pck_int_auc = 0
-        
-        # 计算每个阈值的 ADD 和 PCK
-        for t in add_thresholds:
-            add_value = add_counters[t] / sample_count if sample_count > 0 else 0
-            add_int_value = add_int_counters[t] / sample_count if sample_count > 0 else 0
-            summary[f'ADD_{t}_mm'] = add_value
-            summary_int[f'ADD_{t}_mm'] = add_int_value
-            # 计算 AUC (简化版，使用梯形积分)
-            if t != add_thresholds[-1]:
-                idx = add_thresholds.index(t)
-                t_next = add_thresholds[idx + 1]
-                width = t_next - t
-                add_auc += width * (add_value + summary.get(f'ADD_{t_next}_mm', add_value)) / 2
-                add_int_auc += width * (add_int_value + summary_int.get(f'ADD_{t_next}_mm', add_int_value)) / 2
-        
-        for t in pck_thresholds:
-            pck_value = pck_counters[t] / sample_count if sample_count > 0 else 0
-            pck_int_value = pck_int_counters[t] / sample_count if sample_count > 0 else 0
-            summary[f'PCK_{t}_pixel'] = pck_value
-            summary_int[f'PCK_{t}_pixel'] = pck_int_value
-            # 计算 AUC (简化版，使用梯形积分)
-            if t != pck_thresholds[-1]:
-                idx = pck_thresholds.index(t)
-                t_next = pck_thresholds[idx + 1]
-                width = t_next - t
-                pck_auc += width * (pck_value + summary.get(f'PCK_{t_next}_pixel', pck_value)) / 2
-                pck_int_auc += width * (pck_int_value + summary_int.get(f'PCK_{t_next}_pixel', pck_int_value)) / 2
-        
-        # 归一化 AUC (除以阈值范围)
-        add_range = add_thresholds[-1] - add_thresholds[0]
-        pck_range = pck_thresholds[-1] - pck_thresholds[0]
-        summary['ADD/AUC'] = add_auc / add_range if add_range > 0 else 0
-        summary['PCK/AUC'] = pck_auc / pck_range if pck_range > 0 else 0
-        summary_int['ADD/AUC'] = add_int_auc / add_range if add_range > 0 else 0
-        summary_int['PCK/AUC'] = pck_int_auc / pck_range if pck_range > 0 else 0
-        
-        # 写入tensorboard
-        writer.add_scalar('Val/loss'+ds, loss_val.mean, epoch)
-        writer.add_scalar('Val/pose_loss'+ds, losses_pose.mean, epoch)
-        writer.add_scalar('Val/rot_loss'+ds, losses_rot.mean, epoch)
-        writer.add_scalar('Val/rot_diff'+ds, rotation_diff.mean, epoch)
-        writer.add_scalar('Val/trans_loss'+ds, losses_trans.mean, epoch)
-        writer.add_scalar('Val/uv_loss'+ds, losses_uv.mean, epoch)
-        writer.add_scalar('Val/depth_loss'+ds, losses_depth.mean, epoch)
-        writer.add_scalar('Val/error2d_loss'+ds, losses_error2d.mean, epoch)
-        writer.add_scalar('Val/error3d_loss'+ds, losses_error3d.mean, epoch)
-        writer.add_scalar('Val/error2d_int_loss'+ds, losses_error2d_int.mean, epoch)
-        writer.add_scalar('Val/error3d_int_loss'+ds, losses_error3d_int.mean, epoch)
-        writer.add_scalar('Val/error3d_align_loss'+ds, losses_error3d_align.mean, epoch)
-        writer.add_scalar('Val/mean_joint_error'+ds, mean_jointerror / np.pi * 180.0, epoch)  # degree
-        writer.add_scalar('Val/AUC_ADD'+ds, summary['ADD/AUC'], epoch)
-        writer.add_scalar('Val/AUC_PCK'+ds, summary['PCK/AUC'], epoch)
-        writer.add_scalar('Val/AUC_ADD_integral_xyz_metrics'+ds, summary_int['ADD/AUC'], epoch)
-        writer.add_scalar('Val/AUC_PCK_integral_xyz_metrics'+ds, summary_int['PCK/AUC'], epoch)
-        
-        for k in range(len(add_thresholds)):
-            writer.add_scalar('Val/ADD_'+str(add_thresholds[k])+'_mm'+ds, summary[f'ADD_{add_thresholds[k]}_mm'], epoch)
-        for k in range(len(pck_thresholds)):
-            writer.add_scalar('Val/PCK_'+str(pck_thresholds[k])+'_pixel'+ds, summary[f'PCK_{pck_thresholds[k]}_pixel'], epoch)
-        for k in range(len(add_thresholds)):
-            writer.add_scalar('Val/ADD_'+str(add_thresholds[k])+'_mm'+"_integral_xyz_metrics"+ds, summary_int[f'ADD_{add_thresholds[k]}_mm'], epoch)
-        for k in range(len(pck_thresholds)):
-            writer.add_scalar('Val/PCK_'+str(pck_thresholds[k])+'_pixel'+"_integral_xyz_metrics"+ds, summary_int[f'PCK_{pck_thresholds[k]}_pixel'], epoch)
-        
-        for k in range(len(robot.link_names)):
-            writer.add_scalar('Val/distance3D_keypoint_'+str(k+1)+ds, metric_dis3d[k].mean, epoch)
-        for k in range(len(robot.link_names)):
-            writer.add_scalar('Val/distance2D_keypoint_'+str(k+1)+ds, metric_dis2d[k].mean, epoch)
-        for k in range(len(robot.link_names)):
-            writer.add_scalar('Val/distance3D_keypoint_'+str(k+1)+"_integral_xyz_metrics"+ds, metric_dis3d_int[k].mean, epoch)
-        for k in range(len(robot.link_names)):
-            writer.add_scalar('Val/distance2D_keypoint_'+str(k+1)+"_integral_xyz_metrics"+ds, metric_dis2d_int[k].mean, epoch)
-        for k in range(robot.dof):
-            writer.add_scalar('Val/l1error_joint_'+str(k+1)+ds, metric_l1joint[k].mean, epoch)
-        
-        model.train()
-        return summary['ADD/AUC']
-    else:
-        # 非主进程返回占位值
-        model.train()
-        return 0.0
+                
+    summary = summary_add_pck(alldis)
+    summary_int = summary_add_pck(alldis_int)
+    mean_joint_error = np.mean(alldis["jointerror"]) / np.pi * 180.0  # degree
+    writer.add_scalar('Val/loss'+ds, loss_val.mean , epoch)
+    writer.add_scalar('Val/pose_loss'+ds, losses_pose.mean , epoch)
+    writer.add_scalar('Val/rot_loss'+ds, losses_rot.mean , epoch)
+    writer.add_scalar('Val/rot_diff'+ds, rotation_diff.mean , epoch)
+    writer.add_scalar('Val/trans_loss'+ds, losses_trans.mean , epoch)
+    writer.add_scalar('Val/uv_loss'+ds, losses_uv.mean , epoch)
+    writer.add_scalar('Val/depth_loss'+ds, losses_depth.mean , epoch)
+    writer.add_scalar('Val/error2d_loss'+ds, losses_error2d.mean, epoch)
+    writer.add_scalar('Val/error3d_loss'+ds, losses_error3d.mean, epoch)
+    writer.add_scalar('Val/error2d_int_loss'+ds, losses_error2d.mean, epoch)
+    writer.add_scalar('Val/error3d_int_loss'+ds, losses_error3d.mean, epoch)
+    writer.add_scalar('Val/error3d_align_loss'+ds, losses_error3d_align.mean, epoch)
+    writer.add_scalar('Val/mean_joint_error'+ds, mean_joint_error, epoch)
+    writer.add_scalar('Val/AUC_ADD'+ds, summary['ADD/AUC'], epoch)
+    writer.add_scalar('Val/AUC_PCK'+ds, summary['PCK/AUC'], epoch)
+    writer.add_scalar('Val/AUC_ADD_integral_xyz_metrics'+ds, summary_int['ADD/AUC'], epoch)
+    writer.add_scalar('Val/AUC_PCK_integral_xyz_metrics'+ds, summary_int['PCK/AUC'], epoch)
+    for k in range(len(add_thresholds)):
+        writer.add_scalar('Val/ADD_'+str(add_thresholds[k])+'_mm'+ds, summary[f'ADD_{add_thresholds[k]}_mm'] , epoch)
+    for k in range(len(pck_thresholds)):
+        writer.add_scalar('Val/PCK_'+str(pck_thresholds[k])+'_pixel'+ds, summary[f'PCK_{pck_thresholds[k]}_pixel'] , epoch)
+    for k in range(len(add_thresholds)):
+        writer.add_scalar('Val/ADD_'+str(add_thresholds[k])+'_mm'+"_integral_xyz_metrics"+ds, summary_int[f'ADD_{add_thresholds[k]}_mm'] , epoch)
+    for k in range(len(pck_thresholds)):
+        writer.add_scalar('Val/PCK_'+str(pck_thresholds[k])+'_pixel'+"_integral_xyz_metrics"+ds, summary_int[f'PCK_{pck_thresholds[k]}_pixel'] , epoch)
+    for k in range(len(robot.link_names)):
+        writer.add_scalar('Val/distance3D_keypoint_'+str(k+1)+ds, metric_dis3d[k].mean , epoch)
+    for k in range(len(robot.link_names)):
+        writer.add_scalar('Val/distance2D_keypoint_'+str(k+1)+ds, metric_dis2d[k].mean , epoch)
+    for k in range(len(robot.link_names)):
+        writer.add_scalar('Val/distance3D_keypoint_'+str(k+1)+"_integral_xyz_metrics"+ds, metric_dis3d_int[k].mean , epoch)
+    for k in range(len(robot.link_names)):
+        writer.add_scalar('Val/distance2D_keypoint_'+str(k+1)+"_integral_xyz_metrics"+ds, metric_dis2d_int[k].mean , epoch)
+    for k in range(robot.dof):
+        writer.add_scalar('Val/l1error_joint_'+str(k+1)+ds, metric_l1joint[k].mean, epoch)
+    model.train()
+    return summary['ADD/AUC']
