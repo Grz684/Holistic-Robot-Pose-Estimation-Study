@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"  # 只让程序看到第4个GPU
@@ -27,10 +28,12 @@ from scripts.test import make_cfg, cast
 from lib.dataset.const import INITIAL_JOINT_ANGLE
 from robot_render import rotation_matrix_to_6d
 from lib.utils.transforms import point_projection_from_3d_tensor
+from collections import OrderedDict
+import pickle
 
 parser = argparse.ArgumentParser('Testing')
-parser.add_argument('--exp_path', '-e', type=str, required=True)
-parser.add_argument('--dataset', '-d', type=str, required=True, help= "e.g. panda_synth_test_dr") 
+parser.add_argument('--exp_path', '-e', type=str, default="experiments/dofbot_full")
+parser.add_argument('--dataset', '-d', type=str, default="try_dofbot_synth_train_dr") 
 parser.add_argument('--known_joint', '-k', type=bool, default=False, help= "whether use gt joint for testing")
 parser.add_argument('--model_name', '-m', type=str, default="curr_best_auc(add)_model", help= "model name") 
 args = parser.parse_args()
@@ -39,8 +42,8 @@ args = make_cfg(args)
 device_id = [0]
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-rgb_path = 'data/dofbot_synth_test_dr/000112.rgba.png'
-base_dir = 'data/dofbot_synth_test_dr'
+rgb_path = 'data/real_dr/captured_image_20250407_122601.png'
+base_dir = 'data/real_dr'
 
 rgb_path = Path(rgb_path)
 assert rgb_path
@@ -57,13 +60,11 @@ else:
 # permute(2, 0, 1) 会将其维度顺序调整为 (channels, height, width)（即 CHW 格式）。这是 PyTorch 处理图像数据的标准格式
 images_original = torch.FloatTensor(rgb.copy()).permute(2,0,1)
 
-data_path = rgb_path.with_suffix('').with_suffix('.pkl')
-# annotations = json.loads(rgb_path.with_suffix('').with_suffix('.json').read_text())
-import pickle
-from collections import OrderedDict
-# 加载 pickle 文件
-with open(data_path, 'rb') as f:
-    annotations = pickle.load(f)
+# data_path = rgb_path.with_suffix('').with_suffix('.pkl')
+# # annotations = json.loads(rgb_path.with_suffix('').with_suffix('.json').read_text())
+# # 加载 pickle 文件
+# with open(data_path, 'rb') as f:
+#     annotations = pickle.load(f)
 
 base_dir = Path(base_dir)
 camera_infos_path = base_dir / '_camera_settings.json'
@@ -85,30 +86,30 @@ K = np.array([
 ])
 K_original = K.copy()   
 
-keypoints_data = annotations["keypoint_dict"]
-from lib.dataset.const import LINK_NAMES
-link_names = LINK_NAMES['dofbot']
-keypoints_data = annotations["keypoint_dict"]
-filtered_keypoints_2d = []
+# keypoints_data = annotations["keypoint_dict"]
+# from lib.dataset.const import LINK_NAMES
+# link_names = LINK_NAMES['dofbot']
+# keypoints_data = annotations["keypoint_dict"]
+# filtered_keypoints_2d = []
 
 urdf_robot_name = args.urdf_robot_name
 robot = URDFRobot(urdf_robot_name)
 
-for kp_name, kp_dict in keypoints_data.items():
-    # Extract the link name from format like "/World/dofbot/link2"
-    link_name = kp_name.split('/')[-1]
+# for kp_name, kp_dict in keypoints_data.items():
+#     # Extract the link name from format like "/World/dofbot/link2"
+#     link_name = kp_name.split('/')[-1]
     
-    if link_name in link_names:
-        # This keypoint belongs to a link we're interested in
-        filtered_keypoints_2d.append(np.array(kp_dict['keypoint_projection'])[None])
+#     if link_name in link_names:
+#         # This keypoint belongs to a link we're interested in
+#         filtered_keypoints_2d.append(np.array(kp_dict['keypoint_projection'])[None])
 
-# Concatenate all the filtered keypoints
-if filtered_keypoints_2d:
-    keypoints_2d = np.concatenate(filtered_keypoints_2d, axis=0)
-else:
-    keypoints_2d = np.empty((0, *np.array(next(iter(keypoints_data.values()))['keypoint_projection']).shape))
-# keypoints_2d = np.unique(keypoints_2d, axis=0)
-print(f"keypoints_2d: {keypoints_2d}")
+# # Concatenate all the filtered keypoints
+# if filtered_keypoints_2d:
+#     keypoints_2d = np.concatenate(filtered_keypoints_2d, axis=0)
+# else:
+#     keypoints_2d = np.empty((0, *np.array(next(iter(keypoints_data.values()))['keypoint_projection']).shape))
+# # keypoints_2d = np.unique(keypoints_2d, axis=0)
+# print(f"keypoints_2d: {keypoints_2d}")
 
 # -------------------------------------------
 # filtered_keypoints_3d = []
@@ -136,8 +137,17 @@ print(f"keypoints_2d: {keypoints_2d}")
 # b2c_trans = annotations["keypoint_dict"]["/World/dofbot/link1"]["keypoint_positon"]
 # # print(data)
 
-# # 这些参数需要从你的模型中获取或自行指定
-# joint_angles = np.deg2rad(act_joint_angles)
+# def normalize_angle(angle):
+#     return ((angle + 180) % 360) - 180
+
+# joint_angles = []
+# for i in range(len(act_joint_angles)):
+#     # 将角度转换为弧度
+#     joint_angles.append(np.deg2rad(normalize_angle(act_joint_angles[i])))
+
+# # joint_angles = np.deg2rad(act_joint_angles).tolist()
+
+# print(f"joint_angles: {joint_angles}")
 # rotation = rotation_matrix_to_6d(b2c_rot)  # 旋转矩阵，需要替换
 # translation = b2c_trans
 # joint_angles_tensor = torch.tensor(joint_angles, dtype=torch.float32).unsqueeze(0).to(device)
@@ -155,10 +165,11 @@ print(f"keypoints_2d: {keypoints_2d}")
 # print(f"project_keypoint_2d: {project_keypoint_2d}")
 # -------------------------------------------
 
-bbox_gt2d = np.concatenate([np.min(keypoints_2d, axis=0), np.max(keypoints_2d, axis=0)])
-bbox = get_bbox(bbox_gt2d,w,h,strict=False)
+# bbox_gt2d = np.concatenate([np.min(keypoints_2d, axis=0), np.max(keypoints_2d, axis=0)])
+# bbox = get_bbox(bbox_gt2d,w,h,strict=False)
 
-bbox_strict_info = annotations["robot_bounding_box_2d"]
+# bbox_strict_info = annotations["robot_bounding_box_2d"]
+bbox_strict_info = {'x_min': 187, 'y_min': 88, 'x_max': 438, 'y_max': 331}
 bbox_strict = np.array([bbox_strict_info["x_min"], bbox_strict_info["y_min"], bbox_strict_info["x_max"], bbox_strict_info["y_max"]])
 bbox_strict_bounded = np.array([max(0,bbox_strict[0]),max(0,bbox_strict[1]),min(w,bbox_strict[2]),min(h,bbox_strict[3])])
 bbox_strict_bounded_original = bbox_strict_bounded.copy()
@@ -182,7 +193,8 @@ def resize_image(image, bbox, K):
     
     return square_image, K
 # 裁减目标区域调整为正方形并更新相关数据
-rgb, K = resize_image(rgb, bbox, K)
+# rgb, K = resize_image(rgb, bbox, K)
+rgb, K = resize_image(rgb, bbox_strict_bounded, K)
 
 def to_torch_uint8(im):
     if isinstance(im, PIL.Image.Image):
@@ -297,6 +309,9 @@ with torch.no_grad():
     print(f"pred_pose: {pred_pose}")
     print(f"pred_keypoints3d_int: {pred_keypoints3d_int}")
     print(f"pred_keypoints3d_fk: {pred_keypoints3d_fk}")
+
+    fk_keypoints3d = robot.get_keypoints_root(pred_pose, pred_rot, pred_trans, 1)
+    print(f"前向运动学计算结果：{fk_keypoints3d}")
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm

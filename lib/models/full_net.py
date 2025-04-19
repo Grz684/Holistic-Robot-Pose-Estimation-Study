@@ -325,7 +325,7 @@ class RootNetwithRegInt(nn.Module):
             pred_depths = gamma.view(-1,self.depth_num) * k_value.view(-1,1).expand(-1, self.depth_num)
             # 将单位从毫米转换为米
             pred_depths = pred_depths / 1000.0
-            # 获取参考关键点的深度
+            # 获取参考关键点的深度，在 self.multi_kp 为 False 的情况下，self.kps_need_depth.index(self.reference_keypoint_id) 的结果必定是 0。
             root_index = self.kps_need_depth.index(self.reference_keypoint_id)
             pred_depth = pred_depths[:,root_index].reshape(-1,1)    
         # 单关键点深度预测

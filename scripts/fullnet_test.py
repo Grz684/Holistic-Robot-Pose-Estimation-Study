@@ -157,6 +157,13 @@ if cfg.rotation_dim == 4:
     gt_rot = rotmat_to_quat(TCO[:,:3,:3])
 gt_trans = torch.stack(gt_trans, 0).to(torch.float32)
 
+print((f"gt_pose: {gt_pose}, gt_rot: {gt_rot}, gt_trans: {gt_trans}"))
+
+print(f"真实值的3D关键点: {gt_keypoints3d}")
+
+a = robot.get_keypoints_root(gt_pose, gt_rot, gt_trans, 1)
+print(f"运动学计算的3D关键点: {a}")
+
 test_image, test_K, test_strict_bbox = root_images, root_K, bboxes
 
 # 假设root_images是一个形状为[batch_size, channels, height, width]的tensor
@@ -169,12 +176,10 @@ display_image = root_images[0].cpu().detach().numpy()
 if len(display_image.shape) == 3:  # 如果是3维数组(有通道维度)
     display_image = np.transpose(display_image, (1, 2, 0))
 
-print("图像值范围:", display_image.min(), display_image.max())
-
 display_strict_bbox = bboxes[0].cpu().detach().numpy()
 
 # path
-save_folder = "experiments/dofbot_full/"
+save_folder = "experiments/dofbot_full_not_direct_reg/"
 model_path = os.path.join(save_folder, f"ckpt/curr_best_auc(add)_model.pk")
 result_path = os.path.join(save_folder,  'result')
 os.makedirs(result_path, exist_ok=True)
@@ -221,6 +226,8 @@ with torch.no_grad():
     pred_pose, pred_rot, pred_trans, pred_root_uv, pred_root_depth, \
         pred_uvd, pred_keypoints3d_int, pred_keypoints3d_fk = model(reg_images, root_images, k_values, K=root_K, test_fps=False)
     print(f"pred_pose: {pred_pose}")
+    print(f"pred_rot: {pred_rot}")
+    print(f"pred_trans: {pred_trans}")
     print(f"pred_keypoints3d_int: {pred_keypoints3d_int}")
     print(f"pred_keypoints3d_fk: {pred_keypoints3d_fk}")
 

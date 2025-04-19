@@ -34,8 +34,8 @@ exponent : 0.95
 # Training
 batch_size : 128
 epoch_size : 95000
-n_epochs : 100
-n_dataloader_workers : 16
+n_epochs : 300
+n_dataloader_workers : 32
 save_epoch_interval : None
 clip_gradient : 5.0
 

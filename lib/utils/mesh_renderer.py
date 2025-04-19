@@ -148,7 +148,7 @@ class RobotMeshRenderer():
             image_size=image_size, 
             blur_radius=np.log(1. / 1e-4 - 1.) * blend_params.sigma, 
             faces_per_pixel=100, 
-            max_faces_per_bin=100000,  # max_faces_per_bin=1000000,  
+            max_faces_per_bin=5000000,  # 增加这个值
         )
         
         # Create a silhouette mesh renderer by composing a rasterizer and a shader. 
@@ -166,7 +166,7 @@ class RobotMeshRenderer():
             image_size=image_size, 
             blur_radius=0.0, 
             faces_per_pixel=1, 
-            max_faces_per_bin=100000, 
+            max_faces_per_bin=5000000,  # 增加这个值
         )
         # We can add a point light in front of the object. 
         lights = PointLights(device=device, location=((2.0, 2.0, -2.0),))

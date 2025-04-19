@@ -70,7 +70,7 @@ def make_default_cfg():
     cfg.p_dropout = 0.5
     cfg.use_rpmg = False
     cfg.reg_joint_map = False
-    cfg.joint_conv_dim = []
+    cfg.joint_conv_dim = [128, 128, 128]
     cfg.rotation_dim = 6
     cfg.direct_reg_rot = False
     cfg.rot_iterative_matmul = False

@@ -227,11 +227,11 @@ INITIAL_JOINT_ANGLE = {
         },
         "dofbot": {
             "joint1": 0.0,
-            "joint2": 0.0,
-            "joint3": 0.0,
-            "joint4": 0.0,
+            "joint2": 0.47123885,
+            "joint3": -0.802851415,
+            "joint4": -1.65806283,
             "joint5": 0.0,
-            "left_joint_1": 0.0
+            "left_joint_1": 0.21816618
         }
     }
 }

@@ -50,14 +50,12 @@ def visualize_robot_on_image(image_path, robot_type, joint_angles, rotation, tra
     translation_tensor = torch.tensor(translation, dtype=torch.float32).unsqueeze(0).to(device)
     K_tensor = K_tensor.to(device)
     
-    # 准备图像，确保使用与参考代码相同的尺寸 (240, 320)
-    # 先调整图像大小为 (240, 320)
-    image_resized = cv2.resize(image, (320, 240))
+    image_resized = cv2.resize(image, (640, 480))
     image_tensor = torch.tensor(image_resized).float().unsqueeze(0).to(device)
     
     # 设置渲染器 - 直接使用相同的设置方式
-    cpu_renderer = robot.set_robot_renderer(K_mat, device="cpu")
-    gpu_renderer = robot.set_robot_renderer(K_mat, device="cuda" if torch.cuda.is_available() else "cpu")
+    cpu_renderer = robot.set_robot_renderer(K_mat, scale=1, device="cpu")
+    gpu_renderer = robot.set_robot_renderer(K_mat, scale=1, device="cuda" if torch.cuda.is_available() else "cpu")
     
     # 获取机器人网格
     robot_mesh_batch = robot.get_robot_mesh_list(joint_angles=joint_angles_tensor, renderer=cpu_renderer)
@@ -71,23 +69,18 @@ def visualize_robot_on_image(image_path, robot_type, joint_angles, rotation, tra
             joint_angles_tensor[0], rotation_tensor[0], translation_tensor[0], 
             robot_mesh_batch[0], gpu_renderer, root=reference_keypoint_id
         )
-        
-        # 直接使用固定尺寸 (240, 320) 重塑掩码，与参考代码一致
-        rendered_mask_np = rendered_mask.reshape(240, 320).cpu().numpy() * 255
-        # seg_mask_np = seg_mask.reshape(240, 320).cpu().numpy() * 255
+        rendered_mask_np = rendered_mask.squeeze(0).cpu().numpy() * 255
+        # rendered_mask_np = rendered_mask.cpu().numpy() * 255
+        print(rendered_mask_np.shape)
         
     except Exception as e:
         print(f"Error rendering mask: {e}")
         # 创建空掩码
-        rendered_mask_np = np.zeros((240, 320), dtype=np.uint8)
+        rendered_mask_np = np.zeros((480, 640), dtype=np.uint8)
     
     # 保存渲染掩码
     cv2.imwrite(os.path.join(output_folder, 'rendered_mask.jpg'), rendered_mask_np)
     # cv2.imwrite(os.path.join(output_folder, 'segmentation_mask.jpg'), seg_mask_np)
-    
-    # 创建RGB叠加图像，与参考代码一致
-    stacks = np.zeros((240, 320, 3), dtype=np.uint8)
-    stacks[:, :, 0] = rendered_mask_np  # 在红色通道放置渲染掩码
     
     # 在原始调整大小后的图像上添加渲染
     image_bgr = cv2.cvtColor(image_resized, cv2.COLOR_RGB2BGR)
@@ -109,7 +102,7 @@ def visualize_robot_on_image(image_path, robot_type, joint_angles, rotation, tra
     cv2.imwrite(os.path.join(output_folder, 'image_with_robot.jpg'), overlay)
     
     # 如果需要将渲染和分割掩码叠加 (类似参考代码中的stacks)
-    stacks = np.zeros((240, 320, 3), dtype=np.uint8)
+    stacks = np.zeros((480, 640, 3), dtype=np.uint8)
     stacks[:, :, 0] = rendered_mask_np  # 红色通道 - 渲染掩码
     # 蓝色通道留空，可以放置其他分割掩码
     # overlay[:, :, 2] = seg_mask_np       # 分割掩码在蓝色通道
@@ -186,29 +179,32 @@ def rotation_matrix_to_6d(rotation_matrix):
 # 使用示例
 if __name__ == "__main__":
     # 参数需要根据你的实际情况调整
-    image_path = "output_test/000096.rgba.png"
+    image_path = "data/try_dofbot_synth_train_dr/000307.rgba.png"
     data_path = "output_test/000096.pkl"
     robot_type = "dofbot"  # 使用你的机器人类型
 
     import pickle
 
-    # 加载 pickle 文件
-    with open(data_path, 'rb') as f:
-        data = pickle.load(f)
+    # # 加载 pickle 文件
+    # with open(data_path, 'rb') as f:
+    #     data = pickle.load(f)
 
-    all_joint_angles = data["dofbot_joint_names_positions"].values()
-    act_joint_angles = list(all_joint_angles)[:6]
-    c2b_rot = data["camera_ros_axes_to_robot_root_rot"]
-    b2c_rot = np.transpose(c2b_rot)
-    b2c_trans = data["keypoint_dict"]["/World/dofbot/link1"]["keypoint_positon"]
-    # print(data)
+    # all_joint_angles = data["dofbot_joint_names_positions"].values()
+    # act_joint_angles = list(all_joint_angles)[:6]
+    # c2b_rot = data["camera_ros_axes_to_robot_root_rot"]
+    # b2c_rot = np.transpose(c2b_rot)
+    # b2c_trans = data["keypoint_dict"]["/World/dofbot/link1"]["keypoint_positon"]
+    # # print(data)
     
-    # 这些参数需要从你的模型中获取或自行指定
-    joint_angles = np.deg2rad(act_joint_angles)
-    rotation = rotation_matrix_to_6d(b2c_rot)  # 旋转矩阵，需要替换
-    translation = b2c_trans
+    # # 这些参数需要从你的模型中获取或自行指定
+    # joint_angles = np.deg2rad(act_joint_angles)
+    # rotation = rotation_matrix_to_6d(b2c_rot)  # 旋转矩阵，需要替换
+    # translation = b2c_trans
 
-    print(f"joint_angles: {joint_angles}, rotation: {rotation}, translation: {translation}")
+    # print(f"joint_angles: {joint_angles}, rotation: {rotation}, translation: {translation}")
+    joint_angles = np.array([-0.5017,  0.7287,  0.2723, -1.8464,  0.4003, -0.3971])
+    rotation = np.array([ 0.8707,  0.4097,  0.4127, -0.1925, -0.5064,  0.9106])
+    translation = np.array([0.0322, 0.0404, 0.9677])
     
     output_folder = "visualization_output"
     

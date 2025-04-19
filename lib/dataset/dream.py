@@ -215,7 +215,13 @@ class DreamDataset(torch.utils.data.Dataset):
         # if self.label == 'kuka':
         #     joints = {k.replace('iiwa7_', 'iiwa_'): v for k,v in joints.items()}
         joints = annotations["dofbot_joint_names_positions"]
-        joints = OrderedDict({k: np.deg2rad(float(v)) for k, v in joints.items()})
+
+        def normalize_angle(angle):
+            # 使用更精确的方法规范化角度
+            return np.fmod(angle + 180, 360) - 180
+
+        # 明确使用双精度浮点数
+        joints = OrderedDict({k: np.deg2rad(normalize_angle(np.float64(v))) for k, v in joints.items()})
         from dataset.const import JOINT_NAMES
         robot_joints = JOINT_NAMES[self.label]
         joints = OrderedDict({k: joints[k] for k in robot_joints})

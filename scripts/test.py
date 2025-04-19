@@ -335,6 +335,7 @@ def make_cfg(args):
     cfg.rotation_dim = config["rotation_dim"] if "rotation_dim" in config else 6
     
     cfg.reg_joint_map = config["reg_joint_map"] if "reg_joint_map" in config else False
+    # 官方给的是128
     cfg.joint_conv_dim = config["joint_conv_dim"] if "joint_conv_dim" in config else [128,128,128]
     cfg.p_dropout = config["p_dropout"] if "p_dropout" in config else 0.5
     cfg.direct_reg_rot = config["direct_reg_rot"] if "direct_reg_rot" in config else False
